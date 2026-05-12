@@ -33,12 +33,12 @@ def get_annotation_signature(
         if len(defaults) < len(non_ret_type):
             defaults = [""] * (len(non_ret_type) - len(defaults)) + defaults
         kwargs = ",\n".join(
-            f"{' '*tablen}{k} : {v}{defaults[i]}"
+            f"{' ' * tablen}{k} : {v}{defaults[i]}"
             for i, (k, v) in enumerate(annos.items())
             if k != "return"
         )
         out_kwargs = ",\n".join(
-            f"{' '*2*tablen}{k} = {k}" for k in annos if k != "return"
+            f"{' ' * 2 * tablen}{k} = {k}" for k in annos if k != "return"
         )
     return kwargs, out_kwargs
 

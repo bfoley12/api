@@ -127,7 +127,9 @@ def _get_pydantic_from_dataframe(
         if not all(pd.isna(df[col_name]))
     }
 
-    return create_model("InferredModel", __base__=_DictLikeAccess, **model_fields), columns_renamed  # type: ignore[call-overload]
+    return create_model(
+        "InferredModel", __base__=_DictLikeAccess, **model_fields
+    ), columns_renamed  # type: ignore[call-overload]
 
 
 class Reference(_DictLikeAccess):

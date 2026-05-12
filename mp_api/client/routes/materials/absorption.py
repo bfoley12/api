@@ -76,8 +76,8 @@ class AbsorptionRester(BaseRester):
 
                 query_params.update(
                     {
-                        f"{aliased.get(k,k)}_min": value[0],
-                        f"{aliased.get(k,k)}_max": value[1],
+                        f"{aliased.get(k, k)}_min": value[0],
+                        f"{aliased.get(k, k)}_max": value[1],
                     }
                 )
 

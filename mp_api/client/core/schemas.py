@@ -46,7 +46,7 @@ class _DictLikeAccess(BaseModel):
         return (
             f"{self.__class__.__name__}(\n"
             + "\n".join(
-                f"  {k} ({annos[k]}) : {getattr(self,k)}" for k in populated_fields
+                f"  {k} ({annos[k]}) : {getattr(self, k)}" for k in populated_fields
             )
             + "\n)"
         )

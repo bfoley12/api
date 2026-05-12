@@ -333,7 +333,7 @@ class SummaryRester(BaseRester):
                 else:
                     raise MPRestError(
                         f"Querying `{k}` by a list of values is only "
-                        f"supported for up to {cardinality//2 - 1} values. "
+                        f"supported for up to {cardinality // 2 - 1} values. "
                         f"For your query, retrieve all data first and then filter on `{k}`."
                     )
             else:

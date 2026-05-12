@@ -270,7 +270,7 @@ class MaterialMetadata(BaseModel):
     poscar: str | None = Field(
         None,
         description=(
-            "The structure in VASP's POSCAR format: " "https://vasp.at/wiki/POSCAR"
+            "The structure in VASP's POSCAR format: https://vasp.at/wiki/POSCAR"
         ),
     )
 
@@ -422,7 +422,7 @@ class FetchResult(BaseModel):
 
         if not config.get("url"):
             config["url"] = (
-                "https://next-gen.materialsproject.org/materials/" f"{formatted_mpid}"
+                f"https://next-gen.materialsproject.org/materials/{formatted_mpid}"
             )
         return config
 

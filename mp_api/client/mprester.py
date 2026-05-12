@@ -641,7 +641,9 @@ class MPRester:
         for doc in docs:
             entry_list = doc["entries"].values()
             for entry in entry_list:
-                entry_dict: dict = entry.as_dict() if hasattr(entry, "as_dict") else entry  # type: ignore
+                entry_dict: dict = (
+                    entry.as_dict() if hasattr(entry, "as_dict") else entry
+                )  # type: ignore
                 if not compatible_only:
                     entry_dict["correction"] = 0.0
                     entry_dict["energy_adjustments"] = []
@@ -879,9 +881,7 @@ class MPRester:
             query={"project": "ion_ref_data"},
             fields=["identifier", "formula", "data"],
             paginate=True,
-        ).get(
-            "data"
-        )  # type: ignore
+        ).get("data")  # type: ignore
 
     def get_ion_reference_data_for_chemsys(self, chemsys: str | list) -> list[dict]:
         """Download aqueous ion reference data used in the construction of Pourbaix diagrams.
@@ -1434,8 +1434,7 @@ class MPRester:
         # Prevent user error
         if isinstance(material_ids, str | MPID):
             raise MPRestError(
-                "Input material IDs (even a single ID) as a list: "
-                f"`[{material_ids}]`"
+                f"Input material IDs (even a single ID) as a list: `[{material_ids}]`"
             )
 
         entry_preference = {

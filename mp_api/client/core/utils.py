@@ -54,7 +54,7 @@ def _compare_emmet_ver(
     op_to_op = {"==": "eq", ">": "gt", ">=": "ge", "<": "lt", "<=": "le"}
     return getattr(
         parse_version(_EMMET_CORE_VER),
-        f"__{op_to_op.get(op,op)}__",
+        f"__{op_to_op.get(op, op)}__",
     )(parse_version(ref_version))
 
 

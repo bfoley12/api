@@ -42,7 +42,7 @@ def get_request_headers() -> dict[str, Any]:
 
 
 def is_dev_env(
-    localhosts: Sequence[str] = ("localhost:", "127.0.0.1:", "0.0.0.0:")
+    localhosts: Sequence[str] = ("localhost:", "127.0.0.1:", "0.0.0.0:"),
 ) -> bool:
     """Determine if current env is local/developmental or production.
 

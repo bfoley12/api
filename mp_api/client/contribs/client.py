@@ -2,52 +2,30 @@
 
 from __future__ import annotations
 
-import functools
 import gzip
-import importlib.metadata
-import itertools
-import sys
 import time
-import warnings
-from base64 import urlsafe_b64encode
 from collections import defaultdict
-from concurrent.futures import as_completed
 from copy import deepcopy
 from math import isclose
 from pathlib import Path
-from tempfile import gettempdir
 from typing import TYPE_CHECKING, Literal, cast, overload
-from urllib.parse import urlsplit
 
 import orjson
 import pandas as pd
-import plotly.io as pio
 import requests
 from bravado.client import SwaggerClient
-from bravado.config import bravado_config_from_config_dict
 from bravado.exception import HTTPNotFound
-from bravado.requests_client import RequestsClient
-from bravado.swagger_model import Loader
-from bravado_core.formatter import SwaggerFormat
-from bravado_core.model import model_discovery
-from bravado_core.resource import build_resources
-from bravado_core.spec import Spec, _identity, build_api_serving_url
 from bravado_core.validate import validate_object
 from bson.objectid import ObjectId
-from cachetools import LRUCache, cached  # type: ignore[import-untyped]
-from cachetools.keys import hashkey  # type: ignore[import-untyped]
 from jsonschema.exceptions import ValidationError
 from pint.errors import DimensionalityError
-from pyisemail import is_email
-from pyisemail.diagnosis import BaseDiagnosis
 from pymatgen.core import Structure as PmgStructure
-from requests.exceptions import RequestException
-from requests_futures.sessions import FuturesSession
-from swagger_spec_validator.common import SwaggerValidationError
 from tqdm.auto import tqdm
-from urllib3.util.retry import Retry
 
-from mp_api.client.contribs._logger import MPCC_LOGGER, TqdmToLogger
+from mp_api.client.contribs import helpers
+from mp_api.client.contribs.helpers import *
+
+from mp_api.client.contribs._logger import MPCC_LOGGER
 from mp_api.client.contribs._types import (
     Attachment,
     ComponentIdSets,
@@ -68,8 +46,9 @@ from mp_api.client.contribs.utils import flatten_dict, get_md5, unflatten_dict
 from mp_api.client.core.exceptions import MPContribsClientError
 from mp_api.client.core.schemas import _convert_to_model
 
+
 if TYPE_CHECKING:
-    from collections.abc import Generator, Iterable, Sequence
+    from collections.abc import Iterable
     from typing import Any
 
     from mp_api.client.contribs._types import (
@@ -78,381 +57,6 @@ if TYPE_CHECKING:
         IdentifierLeaf,
         ProjectIdSets,
     )
-
-VALID_OPS = {"query", "create", "update", "delete", "download"}
-VALID_OPS_T = Literal[*VALID_OPS]  # type: ignore[valid-type]
-
-pd.options.plotting.backend = "plotly"
-pio.templates.default = "simple_white"
-warnings.formatwarning = lambda msg, *args, **kwargs: f"{msg}\n"
-warnings.filterwarnings("default", category=DeprecationWarning, module=__name__)
-
-
-def validate_email(email_string: str) -> None:
-    """Validate user email address.
-
-    Args:
-        email_string (str) : the user's email address
-    Returns:
-        None
-    Raises:
-        SwaggerValidationError on malformed email address.
-    """
-    if email_string.count(":") != 1:
-        raise SwaggerValidationError(
-            f"{email_string} not of format <provider>:<email>."
-        )
-
-    provider, email = email_string.split(":", 1)
-    if provider not in MPCC_SETTINGS.PROVIDERS:
-        raise SwaggerValidationError(f"{provider} is not a valid provider.")
-
-    d = is_email(email, diagnose=True)
-    if d > BaseDiagnosis.CATEGORIES["VALID"]:
-        raise SwaggerValidationError(f"{email} {d.message}")
-
-    return None
-
-
-# TODO: mypy has some problems with putting a bare `str`
-# as a callable function in SwaggerFormat
-email_format = SwaggerFormat(
-    format="email",
-    to_wire=str,  # type: ignore[arg-type]
-    to_python=str,  # type: ignore[arg-type]
-    validate=validate_email,
-    description="e-mail address including provider",
-)
-
-
-def validate_url(
-    url_string: str, qualifying: Sequence[str] = ("scheme", "netloc")
-) -> None:
-    """Verify an endpoint URL.
-
-    Args:
-        url_string (str) : the URL as a string
-        qualifying (Sequence of str) : attributes to check for instantiation on the URL
-
-    Returns:
-        None
-
-    Raises:
-        SwaggerValidationError if any `qualifying` fields are missing
-
-    """
-    tokens = urlsplit(url_string)
-    if not all(getattr(tokens, qual_attr) for qual_attr in qualifying):
-        raise SwaggerValidationError(f"{url_string} invalid")
-
-
-url_format = SwaggerFormat(
-    format="url",
-    to_wire=str,  # type: ignore[arg-type]
-    to_python=str,  # type: ignore[arg-type]
-    validate=validate_url,
-    description="URL",
-)
-bravado_config_dict = {
-    "validate_responses": False,
-    "use_models": False,
-    "include_missing_properties": False,
-    "formats": [email_format, url_format],
-}
-bravado_config = bravado_config_from_config_dict(bravado_config_dict)
-for key in set(bravado_config._fields).intersection(set(bravado_config_dict)):
-    del bravado_config_dict[key]
-bravado_config_dict["bravado"] = bravado_config
-
-
-# https://stackoverflow.com/a/8991553
-def grouper(n: int, iterable: Iterable) -> Generator:
-    """Collect data into non-overlapping fixed-length chunks or blocks.
-
-    Args:
-        n (int) : Maximum number of elements per block
-        iterable (Iterable) : object to divide into blocks
-
-    Returns:
-        Generator of input iterable divided into blocks
-    """
-    it = iter(iterable)
-    while True:
-        chunk = tuple(itertools.islice(it, n))
-        if not chunk:
-            return
-        yield chunk
-
-
-def get_session(session: requests.Session | None = None) -> FuturesSession:
-    """Start a futures session.
-
-    Args:
-        session (requests.Session or None) : Optional Session to use
-            in starting a FuturesSession
-    Returns:
-        FuturesSession
-    """
-    adapter_kwargs = dict(
-        max_retries=Retry(
-            total=MPCC_SETTINGS.RETRIES,
-            read=MPCC_SETTINGS.RETRIES,
-            connect=MPCC_SETTINGS.RETRIES,
-            respect_retry_after_header=True,
-            status_forcelist=[429, 502],  # rate limit
-            allowed_methods={"DELETE", "GET", "PUT", "POST"},
-            backoff_factor=2,
-        )
-    )
-    return FuturesSession(
-        session=session if session else requests.Session(),
-        max_workers=MPCC_SETTINGS.MAX_WORKERS,
-        adapter_kwargs=adapter_kwargs,
-    )
-
-
-def _response_hook(resp, *args, **kwargs):
-    content_type = resp.headers["content-type"]
-    if content_type == "application/json":
-        result = resp.json()
-
-        if isinstance(result, dict):
-            if "data" in result and isinstance(result["data"], list):
-                resp.result = result
-                resp.count = len(result["data"])
-            elif "count" in result and isinstance(result["count"], int):
-                resp.count = result["count"]
-
-            if "warning" in result:
-                MPCC_LOGGER.warning(result["warning"])
-            elif "error" in result and isinstance(result["error"], str):
-                MPCC_LOGGER.error(result["error"][:10000] + "...")
-        elif isinstance(result, list):
-            resp.result = result
-            resp.count = len(result)
-
-    elif content_type == "application/gzip":
-        resp.result = resp.content
-        resp.count = 1
-    else:
-        MPCC_LOGGER.error(f"request failed with status {resp.status_code}!")
-        resp.count = 0
-
-
-def _run_futures(
-    futures, total: int = 0, timeout: int = -1, desc=None, disable=False
-) -> dict[str, dict[str, Any]]:
-    """Helper to run futures/requests."""
-    start = time.perf_counter()
-    total_set = total > 0
-    total = total if total_set else len(futures)
-    responses: dict[str, dict[str, Any]] = {}
-
-    with tqdm(  # type: ignore[call-arg,attr-defined]
-        total=total,
-        desc=desc,
-        file=TqdmToLogger(),
-        miniters=1,
-        delay=5,
-        disable=disable,
-    ) as pbar:
-        for future in as_completed(futures):
-            if not future.cancelled():
-                response = future.result()
-                cnt = response.count if total_set and hasattr(response, "count") else 1
-                pbar.update(cnt)
-
-                if hasattr(future, "track_id"):
-                    tid = future.track_id
-                    responses[tid] = {}
-                    if hasattr(response, "result"):
-                        responses[tid]["result"] = response.result
-                    if hasattr(response, "count"):
-                        responses[tid]["count"] = response.count
-
-                elapsed = time.perf_counter() - start
-                timed_out = timeout > 0 and elapsed > timeout
-
-                if timed_out:
-                    for fut in futures:
-                        fut.cancel()
-
-    return responses
-
-
-@functools.lru_cache(maxsize=1000)
-def _load(protocol, host, headers_json, project, version):
-    spec_dict = _raw_specs(protocol, host, version)
-    headers = orjson.loads(headers_json)
-
-    if not spec_dict["paths"]:
-        url = f"{protocol}://{host}"
-        origin_url = f"{url}/apispec.json"
-        http_client = RequestsClient()
-        http_client.session.headers.update(headers)
-        swagger_spec = Spec.from_dict(
-            spec_dict, origin_url, http_client, bravado_config_dict
-        )
-        http_client.session.close()
-        return swagger_spec
-
-    # retrieve list of projects accessible to user
-    query = {"name": project} if project else {}
-    query["_fields"] = ["name"]
-    url = f"{protocol}://{host}"
-    resp = requests.get(f"{url}/projects/", params=query, headers=headers).json()
-
-    if not resp or not resp["data"]:
-        raise MPContribsClientError(f"Failed to load projects for query {query}!")
-
-    if project and not resp["data"]:
-        raise MPContribsClientError(f"{project} doesn't exist, or access denied!")
-
-    projects = sorted(d["name"] for d in resp["data"])
-    # expand regex-based query parameters for `data` columns
-    spec = _expand_params(
-        protocol,
-        host,
-        version,
-        orjson.dumps(projects),
-        api_key=headers.get("x-api-key"),
-    )
-    spec.http_client.session.headers.update(headers)
-    return spec
-
-
-@functools.lru_cache(maxsize=1)
-def _raw_specs(protocol, host, version):
-    http_client = RequestsClient()
-    url = f"{protocol}://{host}"
-    origin_url = f"{url}/apispec.json"
-    url4fn = origin_url.replace("apispec", f"apispec-{version}").encode("utf-8")
-    fn = urlsafe_b64encode(url4fn).decode("utf-8")
-    apispec = Path(gettempdir()) / fn
-    spec_dict = None
-
-    if apispec.exists():
-        spec_dict = orjson.loads(apispec.read_bytes())
-        MPCC_LOGGER.debug(
-            f"Specs for {origin_url} and {version} re-loaded from {apispec}."
-        )
-    else:
-        loader = Loader(http_client)
-        spec_dict = loader.load_spec(origin_url)
-
-        with apispec.open("wb") as f:
-            f.write(orjson.dumps(spec_dict))
-
-        MPCC_LOGGER.debug(f"Specs for {origin_url} and {version} saved as {apispec}.")
-
-    if not spec_dict:
-        raise MPContribsClientError(
-            f"Couldn't load specs from {url} for {version}!"
-        )  # not cached
-
-    spec_dict["host"] = host
-    spec_dict["schemes"] = [protocol]
-    http_client.session.close()
-    return spec_dict
-
-
-@cached(
-    cache=LRUCache(maxsize=100),
-    key=lambda protocol, host, version, projects_json, **kwargs: hashkey(
-        protocol, host, version, projects_json
-    ),
-)
-def _expand_params(protocol, host, version, projects_json, api_key=None):
-    columns = {"string": [], "number": []}
-    projects = orjson.loads(projects_json)
-    query = {"project__in": ",".join(projects)}
-    query["_fields"] = "columns"
-    url = f"{protocol}://{host}"
-    http_client = RequestsClient()
-    http_client.session.headers["Content-Type"] = "application/json"
-    if api_key:
-        http_client.session.headers["X-Api-Key"] = api_key
-    resp = http_client.session.get(f"{url}/projects/", params=query).json()
-
-    for proj in resp["data"]:
-        for column in proj["columns"]:
-            if column["path"].startswith("data."):
-                col = column["path"].replace(".", "__")
-                if column["unit"] == "NaN":
-                    columns["string"].append(col)
-                else:
-                    col = f"{col}__value"
-                    columns["number"].append(col)
-
-    spec_dict = _raw_specs(protocol, host, version)
-    resource = spec_dict["paths"]["/contributions/"]["get"]
-    raw_params = resource.pop("parameters")
-    params = {}
-
-    for param in raw_params:
-        if param["name"].startswith("^data__"):
-            op = param["name"].rsplit("$__", 1)[-1]
-            typ = param["type"]
-            key = "number" if typ == "number" else "string"
-
-            for column in columns[key]:
-                param_name = f"{column}__{op}"
-                if param_name not in params:
-                    param_spec = {
-                        k: v
-                        for k, v in param.items()
-                        if k not in ["name", "description"]
-                    }
-                    param_spec["name"] = param_name
-                    params[param_name] = param_spec
-        else:
-            params[param["name"]] = param
-
-    resource["parameters"] = list(params.values())
-
-    origin_url = f"{url}/apispec.json"
-    spec = Spec(spec_dict, origin_url, http_client, bravado_config_dict)
-    model_discovery(spec)
-
-    if spec.config["internally_dereference_refs"]:
-        spec.deref = _identity
-        spec._internal_spec_dict = spec.deref_flattened_spec
-
-    for user_defined_format in spec.config["formats"]:
-        spec.register_format(user_defined_format)
-
-    spec.resources = build_resources(spec)
-    spec.api_url = build_api_serving_url(
-        spec_dict=spec.spec_dict,
-        origin_url=spec.origin_url,
-        use_spec_url_for_base_path=spec.config["use_spec_url_for_base_path"],
-    )
-    http_client.session.close()
-    return spec
-
-
-@functools.lru_cache(maxsize=1)
-def _version(url):
-    retries, max_retries = 0, 3
-    protocol = urlsplit(url).scheme
-    if "pytest" in sys.modules and protocol == "http":
-        return importlib.metadata.version("mp-api")
-
-    while retries < max_retries:
-        try:
-            r = requests.get(f"{url}/healthcheck", timeout=5)
-            if r.status_code in {200, 403}:
-                return r.json().get("version")
-            else:
-                retries += 1
-                MPCC_LOGGER.warning(
-                    f"Healthcheck for {url} failed ({r.status_code})! Wait 30s."
-                )
-                time.sleep(30)
-        except RequestException as ex:
-            retries += 1
-            MPCC_LOGGER.warning(f"Could not connect to {url} ({ex})! Wait 30s.")
-            time.sleep(30)
 
 
 class ContribsClient(SwaggerClient):
@@ -534,8 +138,8 @@ class ContribsClient(SwaggerClient):
                 f"{', '.join(MPCC_SETTINGS.VALID_URLS)})"
             )
 
-        self.version = _version(self.url)  # includes healthcheck
-        self.session = get_session(session=session)
+        self.version = helpers._version(self.url)  # includes healthcheck
+        self.session = helpers.get_session(session=session)
 
         self.use_document_model = use_document_model
 
@@ -569,7 +173,7 @@ class ContribsClient(SwaggerClient):
         return members
 
     def _reinit(self):
-        _load.cache_clear()
+        helpers._load.cache_clear()
         super().__init__(self.cached_swagger_spec)
 
     def _is_valid_payload(self, model: str, data: dict) -> None:
@@ -597,7 +201,7 @@ class ContribsClient(SwaggerClient):
             pass
 
     def _get_per_page_default_max(
-        self, op: VALID_OPS_T = "query", resource: str = "contributions"
+        self, op: helpers.VALID_OPS_T = "query", resource: str = "contributions"
     ) -> tuple[int, int]:
         attr = f"{op}{resource.capitalize()}"
         resource = self.swagger_spec.resources[resource]
@@ -607,7 +211,7 @@ class ContribsClient(SwaggerClient):
     def _get_per_page(
         self,
         per_page: int = -1,
-        op: VALID_OPS_T = "query",
+        op: helpers.VALID_OPS_T = "query",
         resource: str = "contributions",
     ) -> int:
         per_page_default, per_page_max = self._get_per_page_default_max(
@@ -620,7 +224,7 @@ class ContribsClient(SwaggerClient):
     def _split_query(
         self,
         query: dict,
-        op: VALID_OPS_T = "query",
+        op: helpers.VALID_OPS_T = "query",
         resource: str = "contributions",
         pages: int = -1,
     ) -> list[dict]:
@@ -647,7 +251,7 @@ class ContribsClient(SwaggerClient):
                     line_len = len(",".join(vv).encode("utf-8"))
 
                 if len(v) > per_page:
-                    for chunk in grouper(per_page, v):
+                    for chunk in helpers.grouper(per_page, v):
                         queries.append({k: list(chunk)})
 
         query["per_page"] = per_page
@@ -675,7 +279,7 @@ class ContribsClient(SwaggerClient):
         track_id,
         params: dict,
         rel_url: str = "contributions",
-        op: VALID_OPS_T = "query",
+        op: helpers.VALID_OPS_T = "query",
         data: dict | None = None,
     ):
         rname = rel_url.split("/", 1)[0]
@@ -685,7 +289,7 @@ class ContribsClient(SwaggerClient):
         kwargs: dict[str, Any] = {
             "headers": self.headers,
             "params": params,
-            "hooks": {"response": _response_hook},
+            "hooks": {"response": helpers._response_hook},
         }
 
         if method == "put" and data:
@@ -778,13 +382,13 @@ class ContribsClient(SwaggerClient):
                 future = self.session.get(
                     f"{self.url}/projects/search",
                     headers=self.headers,
-                    hooks={"response": _response_hook},
+                    hooks={"response": helpers._response_hook},
                     params={"term": search_term},
                 )
                 future.track_id = "search"
                 return future
 
-            responses = _run_futures(
+            responses = helpers._run_futures(
                 [search_future(term)], timeout=timeout, disable=True
             )
             query["name__in"] = responses["search"].get("result", [])
@@ -826,7 +430,7 @@ class ContribsClient(SwaggerClient):
         futures = [
             self._get_future(i, q, rel_url="projects") for i, q in enumerate(queries)
         ]
-        responses = _run_futures(futures, total=total_count, timeout=timeout)
+        responses = helpers._run_futures(futures, total=total_count, timeout=timeout)
 
         ret["data"].extend([resp["result"]["data"] for resp in responses.values()])
 
@@ -1287,7 +891,7 @@ class ContribsClient(SwaggerClient):
         _, total_pages = self.get_totals(query=query)
         queries = self._split_query(query, op="delete", pages=total_pages)
         futures = [self._get_future(i, q, op="delete") for i, q in enumerate(queries)]
-        _run_futures(futures, total=total, timeout=timeout)
+        helpers._run_futures(futures, total=total, timeout=timeout)
         left, _ = self.get_totals(query=query)
         deleted = total - left
         self.init_columns(name=name)
@@ -1306,7 +910,7 @@ class ContribsClient(SwaggerClient):
         query: dict | None = None,
         timeout: int = -1,
         resource: str = "contributions",
-        op: VALID_OPS_T = "query",
+        op: helpers.VALID_OPS_T = "query",
     ) -> tuple[int, int]:
         """Retrieve total count and pages for resource entries matching query.
 
@@ -1320,8 +924,8 @@ class ContribsClient(SwaggerClient):
         Returns:
             tuple of total counts (int) and pages (int)
         """
-        if op not in VALID_OPS:
-            raise MPContribsClientError(f"`op` has to be one of {VALID_OPS}")
+        if op not in helpers.VALID_OPS:
+            raise MPContribsClientError(f"`op` has to be one of {helpers.VALID_OPS}")
 
         query = query or {}
         if self.project and "project" not in query:
@@ -1334,7 +938,7 @@ class ContribsClient(SwaggerClient):
         futures = [
             self._get_future(i, q, rel_url=resource) for i, q in enumerate(queries)
         ]
-        responses = _run_futures(futures, timeout=timeout, desc="Totals")
+        responses = helpers._run_futures(futures, timeout=timeout, desc="Totals")
 
         result = {
             k: sum(resp.get("result", {}).get(k, 0) for resp in responses.values())
@@ -1374,7 +978,7 @@ class ContribsClient(SwaggerClient):
         include: list[str] | None = None,
         timeout: int = -1,
         data_id_fields: dict[str, str] | None = None,
-        op: VALID_OPS_T = "query",
+        op: helpers.VALID_OPS_T = "query",
     ) -> tuple[list[dict[str, Any]], set[str], dict[str, str], dict[str, bool]]:
         include = include or []
         components = {x for x in include if x in MPCC_SETTINGS.COMPONENTS}
@@ -1383,8 +987,8 @@ class ContribsClient(SwaggerClient):
                 f"`include` must be subset of {MPCC_SETTINGS.COMPONENTS}!"
             )
 
-        if op not in VALID_OPS:
-            raise MPContribsClientError(f"`op` has to be one of {VALID_OPS}")
+        if op not in helpers.VALID_OPS:
+            raise MPContribsClientError(f"`op` has to be one of {helpers.VALID_OPS}")
 
         unique_identifiers = self.get_unique_identifiers_flags()
         data_id_fields = {
@@ -1408,7 +1012,7 @@ class ContribsClient(SwaggerClient):
         _, total_pages = self.get_totals(query=query, timeout=timeout)
         queries = self._split_query(query, op=op, pages=total_pages)
         futures = [self._get_future(i, q) for i, q in enumerate(queries)]
-        responses = _run_futures(futures, timeout=timeout, desc="Identifiers")
+        responses = helpers._run_futures(futures, timeout=timeout, desc="Identifiers")
 
         contributions: list[dict[str, Any]] = []
         for resp in responses.values():
@@ -1552,7 +1156,7 @@ class ContribsClient(SwaggerClient):
         timeout: int = -1,
         data_id_fields: dict[str, str] | None = None,
         fmt: Literal["sets"] = "sets",
-        op: VALID_OPS_T = "query",
+        op: helpers.VALID_OPS_T = "query",
     ) -> AllIdSets: ...
 
     @overload
@@ -1563,7 +1167,7 @@ class ContribsClient(SwaggerClient):
         timeout: int = -1,
         data_id_fields: dict[str, str] | None = None,
         fmt: Literal["map"] = "map",
-        op: VALID_OPS_T = "query",
+        op: helpers.VALID_OPS_T = "query",
     ) -> AllIdMap: ...
 
     def get_all_ids(
@@ -1573,7 +1177,7 @@ class ContribsClient(SwaggerClient):
         timeout: int = -1,
         data_id_fields: dict[str, str] | None = None,
         fmt: Literal["sets", "map"] = "sets",
-        op: VALID_OPS_T = "query",
+        op: helpers.VALID_OPS_T = "query",
     ) -> AllIdSets | AllIdMap:
         """Retrieve a list of existing contribution and component (Object)IDs.
 
@@ -1703,7 +1307,7 @@ class ContribsClient(SwaggerClient):
             _, total_pages = self.get_totals(query=cids_query)
             queries = self._split_query(cids_query, pages=total_pages)
             futures = [self._get_future(i, q) for i, q in enumerate(queries)]
-            responses = _run_futures(futures, total=total, timeout=timeout)
+            responses = helpers._run_futures(futures, total=total, timeout=timeout)
             ret: dict[str, int | list[str]] = {"total_count": 0, "data": []}
 
             for resp in responses.values():
@@ -1782,7 +1386,7 @@ class ContribsClient(SwaggerClient):
             self._get_future(i, q, op="update", data=data)
             for i, q in enumerate(queries)
         ]
-        responses = _run_futures(futures, total=total, timeout=timeout)
+        responses = helpers._run_futures(futures, total=total, timeout=timeout)
         updated = sum(resp["count"] for _, resp in responses.items())
 
         if updated:
@@ -2138,7 +1742,7 @@ class ContribsClient(SwaggerClient):
                 future = self.session.post(
                     f"{self.url}/contributions/",
                     headers=self.headers,
-                    hooks={"response": _response_hook},
+                    hooks={"response": helpers._response_hook},
                     data=payload,
                 )
                 future.track_id = track_id
@@ -2148,7 +1752,7 @@ class ContribsClient(SwaggerClient):
                 future = self.session.put(
                     f"{self.url}/contributions/{pk}/",
                     headers=self.headers,
-                    hooks={"response": _response_hook},
+                    hooks={"response": helpers._response_hook},
                     data=payload,
                 )
                 future.track_id = pk
@@ -2206,7 +1810,7 @@ class ContribsClient(SwaggerClient):
                     if not futures:
                         break  # nothing to do
 
-                    responses = _run_futures(
+                    responses = helpers._run_futures(
                         futures,
                         total=ncontribs - total_processed,
                         timeout=timeout,
@@ -2528,7 +2132,7 @@ class ContribsClient(SwaggerClient):
                 )
 
         if futures:
-            responses = _run_futures(futures, timeout=timeout)
+            responses = helpers._run_futures(futures, timeout=timeout)
 
             for p, resp in responses.items():
                 Path(p).write_bytes(resp["result"])

@@ -138,7 +138,7 @@ class MPCoreMCP(_NeedsMPClient):
 
         sim_scores_by_mpid = {
             doc["material_id"]: ", ".join(
-                f"{entry['task_id']}: {entry['formula']} ({100. - entry['dissimilarity']:.1f}% similar)"
+                f"{entry['task_id']}: {entry['formula']} ({100.0 - entry['dissimilarity']:.1f}% similar)"
                 for entry in sorted(doc["sim"], key=lambda e: e["dissimilarity"])[:10]
             )
             for doc in (similarity_docs or [])
