@@ -51,43 +51,6 @@ if TYPE_CHECKING:
     )
 
 
-def handle_api_key(api_key: str | None, headers: dict[str, Any] | None, **kwargs) -> tuple[str | None, dict[str, Any]]:
-    """Checks kwargs for api key and corrects outdated formats.
-    Throws error if api key is invalid.
-
-    Args:
-        api_key (str): user provided api_key
-        headers: dict[str, Any]: custom headers for localhost connection
-        **kwargs (dict[str, Any]): kwargs possibly containing the api key
-
-    Returns:
-        tuple: (validated api key, remaining kwargs after popping api_key)
-    """
-    if "apikey" in kwargs:
-        api_key_warn = (
-            "`apikey` has been deprecated in favor of `api_key` for "
-            " consistency with the Materials Project API client."
-        )
-        if api_key:
-            api_key_warn += (
-                " Ignoring `apikey` in favor of `api_key`, which was also set."
-            )
-        else:
-            api_key = kwargs.pop("apikey")
-        MPCC_LOGGER.warning(api_key_warn)
-
-    if api_key and len(api_key) != 32:
-        raise MPContribsClientError(f"Invalid API key: {api_key}")
-
-    if api_key and headers:
-        api_key = None
-        MPCC_LOGGER.debug("headers set => ignoring apikey!")
-
-    if not api_key and not headers:
-        raise MPContribsClientError("Must specify either api_key or headers!")
-
-    return api_key, kwargs
-
 class ContribsClient:
     """client to connect to MPContribs API.
 
@@ -146,11 +109,12 @@ class ContribsClient:
             )
 
         self.version = helpers._version(self.url)  # includes healthcheck
+        # Brendan TODO: pretty sure we can just remove this
         self.session = helpers.get_session(session=session)
 
         self.use_document_model = use_document_model
 
-        super().__init__(self.cached_swagger_spec)
+        self.projects = ProjectClient(self)
 
     def __enter__(self):
         return self
@@ -167,22 +131,27 @@ class ContribsClient:
         )
         return self.api_key
 
+    # Brendan TODO: translate to use httpx
+    # looks like it caches the data available to the user?
     @property
     def cached_swagger_spec(self):
         return helpers._load(
             self.protocol, self.host, self.headers_json, self.project, self.version
         )
 
+    # Brendan TODO: Translate
     def __dir__(self) -> set[str]:
         members = set(self.swagger_spec.resources.keys())
         members |= {k for k in self.__dict__ if not k.startswith("_")}
         members |= {k for k in dir(self.__class__) if not k.startswith("_")}
         return members
 
+    # Brendan TODO: Translate
     def _reinit(self):
         helpers._load.cache_clear()
         super().__init__(self.cached_swagger_spec)
 
+    # Brendan TODO: Translate
     def _is_valid_payload(self, model: str, data: dict) -> None:
         """Raise an error if a payload is invalid."""
         model_spec = deepcopy(self.get_model(f"{model}sSchema")._model_spec)
@@ -194,6 +163,7 @@ class ContribsClient:
         except ValidationError as ex:
             raise MPContribsClientError(str(ex))
 
+    # Brendan TODO: Translate
     def _is_serializable_dict(self, dct: dict) -> None:
         """Raise an error if an input dict is not JSON serializable."""
         try:
@@ -207,6 +177,7 @@ class ContribsClient:
         except StopIteration:
             pass
 
+    # Brendan TODO: Translate
     def _get_per_page_default_max(
         self, op: helpers.VALID_OPS_T = "query", resource: str = "contributions"
     ) -> tuple[int, int]:
@@ -215,6 +186,7 @@ class ContribsClient:
         param_spec = getattr(resource, attr).params["per_page"].param_spec
         return param_spec["default"], param_spec["maximum"]
 
+    # Brendan TODO: Translate
     def _get_per_page(
         self,
         per_page: int = -1,
@@ -228,6 +200,7 @@ class ContribsClient:
             per_page = per_page_default
         return min(per_page_max, per_page)
 
+    # Brendan TODO: Translate
     def _split_query(
         self,
         query: dict,
@@ -281,6 +254,7 @@ class ContribsClient:
 
         return queries
 
+    # Brendan TODO: Translate
     def _get_future(
         self,
         track_id,
@@ -306,6 +280,7 @@ class ContribsClient:
         future.track_id = track_id
         return future
 
+    # Brendan TODO: Translate
     def available_query_params(
         self,
         startswith: tuple | None = None,
@@ -325,6 +300,14 @@ class ContribsClient:
 
         return [param for param in params if param.startswith(startswith)]
 
+    def _get_project_name(self, name: str | None) -> str:
+        name = self.project or name
+        if not name:
+            raise MPContribsClientError(
+                "initialize client with project or set `name` argument!"
+            )
+        return name
+
     def get_project(
         self, name: str | None = None, fields: list | None = None
     ) -> MPCDict | ContribsProject:
@@ -334,11 +317,7 @@ class ContribsClient:
             name (str): name of the project
             fields (list): list of fields to include in response
         """
-        name = self.project or name
-        if not name:
-            raise MPContribsClientError(
-                "initialize client with project or set `name` argument!"
-            )
+        name = self._get_project_name(name)
 
         fields = fields or ["_all"]  # retrieve all fields by default
         proj = self.projects.getProjectByName(pk=name, _fields=fields).result()

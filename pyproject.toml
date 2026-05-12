@@ -144,3 +144,8 @@ exclude_also = [
   # A pragma comment that excludes an entire file:
   '\A(?s:.*# pragma: exclude file.*)\Z',
 ]
+
+[dependency-groups]
+dev = [
+    "tenacity>=9.1.4",
+]
