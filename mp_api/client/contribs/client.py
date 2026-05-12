@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Literal, cast, overload
 import httpx
 import orjson
 from jsonschema.exceptions import ValidationError
+from mp_api.client.contribs.base import BaseClient
 from pint.errors import DimensionalityError
 from pymatgen.core import Structure as PmgStructure
 from tqdm.auto import tqdm
@@ -51,7 +52,7 @@ if TYPE_CHECKING:
     )
 
 
-class ContribsClient:
+class ContribsClient(BaseClient):
     """client to connect to MPContribs API.
 
     Typical usage:
@@ -67,7 +68,7 @@ class ContribsClient:
         headers: dict | None = None,
         host: str | None = None,
         project: str | None = None,
-        _http: httpx.Client | None = None,
+        http: httpx.Client | None = None,
         use_document_model: bool = False,
         **kwargs,
     ) -> None:
@@ -85,32 +86,8 @@ class ContribsClient:
         # - Kong forwards consumer headers when api-key used for auth
         # - forward consumer headers when connecting through localhost
 
-        api_key, kwargs = handle_api_key(api_key, headers, **kwargs)
-
-        self.api_key = api_key
-        self.headers = headers or {}
-        self.headers = {"x-api-key": api_key} if api_key else self.headers
-        self.headers["Content-Type"] = "application/json"
-        self.headers_json = orjson.dumps(
-            {k: self.headers[k] for k in sorted(self.headers)}
-        )
-        self.host = host or MPCC_SETTINGS.API_HOST
-        ssl = self.host.endswith(".materialsproject.org") and not self.host.startswith(
-            "localhost."
-        )
-        self.protocol = "https" if ssl else "http"
-        self.url = f"{self.protocol}://{self.host}"
+        super().__init__(api_key=api_key, headers=headers, host=host, http=http)
         self.project = project
-
-        if self.url not in MPCC_SETTINGS.VALID_URLS:
-            raise MPContribsClientError(
-                f"{self.url} not a valid URL (one of "
-                f"{', '.join(MPCC_SETTINGS.VALID_URLS)})"
-            )
-
-        self.version = helpers._version(self.url)  # includes healthcheck
-        # Brendan TODO: pretty sure we can just remove this
-        self.session = helpers.get_session(session=session)
 
         self.use_document_model = use_document_model
 
