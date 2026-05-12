@@ -29,6 +29,9 @@ dependencies = [
   "orjson >= 3.10,<4",
   "pyarrow >= 20.0.0",
   "deltalake >= 1.4.0",
+  "httpx>=0.28.1",
+  "polars>=1.40.1",
+  "pydantic>=2.13.4",
 ]
 dynamic = ["version"]
 
@@ -37,7 +40,6 @@ mcp = ["fastmcp"]
 server = ["flask"]
 contribs = [
   "boltons",
-  "bravado",
   "filetype",
   "ipython",
   "json2html",

@@ -10,13 +10,8 @@ from math import isclose
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast, overload
 
+import httpx
 import orjson
-import pandas as pd
-import requests
-from bravado.client import SwaggerClient
-from bravado.exception import HTTPNotFound
-from bravado_core.validate import validate_object
-from bson.objectid import ObjectId
 from jsonschema.exceptions import ValidationError
 from pint.errors import DimensionalityError
 from pymatgen.core import Structure as PmgStructure
@@ -56,7 +51,36 @@ if TYPE_CHECKING:
     )
 
 
-class ContribsClient(SwaggerClient):
+def handle_api_key(api_key: str, **kwargs) -> tuple[str, dict[str, Any]]:
+    """Checks kwargs for api key and corrects outdated formats.
+    Throws error if api key is invalid.
+
+    Args:
+        api_key (str): user provided api_key
+        **kwargs (dict[str, Any]): kwargs possibly containing the api key
+
+    Returns:
+        tuple: (validated api key, remaining kwargs after popping api_key)
+    """
+    if "apikey" in kwargs:
+        api_key_warn = (
+            "`apikey` has been deprecated in favor of `api_key` for "
+            " consistency with the Materials Project API client."
+        )
+        if api_key:
+            api_key_warn += (
+                " Ignoring `apikey` in favor of `api_key`, which was also set."
+            )
+        else:
+            api_key = kwargs.pop("apikey")
+        MPCC_LOGGER.warning(api_key_warn)
+
+    if api_key and len(api_key) != 32:
+        raise MPContribsClientError(f"Invalid API key: {api_key}")
+
+    return api_key, kwargs
+
+class ContribsClient:
     """client to connect to MPContribs API.
 
     Typical usage:
@@ -72,7 +96,7 @@ class ContribsClient(SwaggerClient):
         headers: dict | None = None,
         host: str | None = None,
         project: str | None = None,
-        session: requests.Session | None = None,
+        _http: httpx.Client | None = None,
         use_document_model: bool = False,
         **kwargs,
     ) -> None:
@@ -83,29 +107,14 @@ class ContribsClient(SwaggerClient):
             headers (dict): custom headers for localhost connections
             host (str): host address to connect to (or use MPCONTRIBS_API_HOST env var)
             project (str): use this project for all operations (query, update, create, delete)
-            session (requests.Session): override session for client to use
+            _http (httpx.Client): override the httpx client to use
             use_document_model (bool) : whether to use pydantic document models by default to validate data
             kwargs : To handle deprecated class attributes
         """
-        # NOTE bravado future doesn't work with concurrent.futures
         # - Kong forwards consumer headers when api-key used for auth
         # - forward consumer headers when connecting through localhost
 
-        if "apikey" in kwargs:
-            api_key_warn = (
-                "`apikey` has been deprecated in favor of `api_key` for "
-                " consistency with the Materials Project API client."
-            )
-            if api_key:
-                api_key_warn += (
-                    " Ignoring `apikey` in favor of `api_key`, which was also set."
-                )
-            else:
-                api_key = kwargs.pop("apikey")
-            MPCC_LOGGER.warning(api_key_warn)
-
-        if api_key and len(api_key) != 32:
-            raise MPContribsClientError(f"Invalid API key: {api_key}")
+        api_key, kwargs = handle_api_key(**kwargs)
 
         if api_key and headers:
             api_key = None
