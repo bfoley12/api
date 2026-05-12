@@ -51,12 +51,13 @@ if TYPE_CHECKING:
     )
 
 
-def handle_api_key(api_key: str, **kwargs) -> tuple[str, dict[str, Any]]:
+def handle_api_key(api_key: str | None, headers: dict[str, Any] | None, **kwargs) -> tuple[str | None, dict[str, Any]]:
     """Checks kwargs for api key and corrects outdated formats.
     Throws error if api key is invalid.
 
     Args:
         api_key (str): user provided api_key
+        headers: dict[str, Any]: custom headers for localhost connection
         **kwargs (dict[str, Any]): kwargs possibly containing the api key
 
     Returns:
@@ -77,6 +78,13 @@ def handle_api_key(api_key: str, **kwargs) -> tuple[str, dict[str, Any]]:
 
     if api_key and len(api_key) != 32:
         raise MPContribsClientError(f"Invalid API key: {api_key}")
+
+    if api_key and headers:
+        api_key = None
+        MPCC_LOGGER.debug("headers set => ignoring apikey!")
+
+    if not api_key and not headers:
+        raise MPContribsClientError("Must specify either api_key or headers!")
 
     return api_key, kwargs
 
@@ -114,14 +122,7 @@ class ContribsClient:
         # - Kong forwards consumer headers when api-key used for auth
         # - forward consumer headers when connecting through localhost
 
-        api_key, kwargs = handle_api_key(**kwargs)
-
-        if api_key and headers:
-            api_key = None
-            MPCC_LOGGER.debug("headers set => ignoring apikey!")
-
-        if not api_key and not headers:
-            raise MPContribsClientError("Must specify either api_key or headers!")
+        api_key, kwargs = handle_api_key(api_key, headers, **kwargs)
 
         self.api_key = api_key
         self.headers = headers or {}
