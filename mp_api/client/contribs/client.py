@@ -23,8 +23,6 @@ from pymatgen.core import Structure as PmgStructure
 from tqdm.auto import tqdm
 
 from mp_api.client.contribs import helpers
-from mp_api.client.contribs.helpers import *
-
 from mp_api.client.contribs._logger import MPCC_LOGGER
 from mp_api.client.contribs._types import (
     Attachment,
@@ -45,7 +43,6 @@ from mp_api.client.contribs.settings import MPCC_SETTINGS
 from mp_api.client.contribs.utils import flatten_dict, get_md5, unflatten_dict
 from mp_api.client.core.exceptions import MPContribsClientError
 from mp_api.client.core.schemas import _convert_to_model
-
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -162,7 +159,7 @@ class ContribsClient(SwaggerClient):
 
     @property
     def cached_swagger_spec(self):
-        return _load(
+        return helpers._load(
             self.protocol, self.host, self.headers_json, self.project, self.version
         )
 
