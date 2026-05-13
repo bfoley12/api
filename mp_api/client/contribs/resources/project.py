@@ -3,12 +3,15 @@ from __future__ import annotations
 from typing import Any, cast
 
 import httpx
+from pydantic import BaseModel
 
 from mp_api.client.contribs import helpers
+from mp_api.client.contribs._logger import MPCC_LOGGER
 from mp_api.client.contribs.models.project import ContribsProject
+from mp_api.client.contribs.models.reference import Reference
 from mp_api.client.contribs.models.response import Response
 from mp_api.client.contribs.pagination import paginate
-from mp_api.client.contribs.resources.base import BaseResource
+from mp_api.client.contribs.resources.base import VALID_RESOURCES, BaseResource
 from mp_api.client.contribs.resources.mpc import format_output
 from mp_api.client.core.exceptions import MPContribsClientError
 
@@ -19,14 +22,18 @@ class ProjectResource(BaseResource):
         name: str | None,
         http: httpx.AsyncClient,
         use_document_model: bool = True,
-        endpoint_slug: str = "",
+        endpoint_slug: str = "projects",
     ) -> None:
         """Constructor for ProjectResource.
 
         Takes an optional name when top-level client is scoped to a project.
         """
-        super().__init__(http=http, use_document_model=use_document_model, endpoint_slug=endpoint_slug)
-        self.name=name
+        super().__init__(
+            http=http,
+            use_document_model=use_document_model,
+            endpoint_slug=endpoint_slug,
+        )
+        self.name = name
 
     def _get_name(self, name: str | None) -> str:
         """Reports the name of the project, preferring the name given at construciton."""
@@ -87,8 +94,85 @@ class ProjectResource(BaseResource):
 
         return contribs_list
 
-    def scan(self,
-        query: dict[str, Any] | None = None,
-        _timeout: int = -1,
-        op: helpers.VALID_OPS = helpers.VALID_OPS.QUERY
-    ) -> tuple[int, int]:
+    async def create(
+        self,
+        name: str,
+        title: str,
+        authors: str,
+        description: str,
+        url: str,
+    ) -> None:
+        """Create a project.
+
+        Args:
+            name (str): unique name matching `^[a-zA-Z0-9_]{3,31}$`
+            title (str): unique title with 5-30 characters
+            authors (str): comma-separated list of authors
+            description (str): brief description (max 2000 characters)
+            url (str): URL for primary reference (paper/website/...)
+        """
+        queries = [{"name": name}, {"title": title}]
+        for query in queries:
+            if await self.scan(
+                query=query, resource=VALID_RESOURCES.PROJECTS, name=self.name
+            ):
+                raise MPContribsClientError(f"Project with {query} already exists!")
+
+        project = ContribsProject(
+            name=name,
+            title=title,
+            authors=authors,
+            description=description,
+            references=[Reference(label="REF", url=url)],
+        )
+        resp = await self.put(url="", project=project.to_draft())
+        owner = resp.get("owner")
+        if owner:
+            MPCC_LOGGER.info(f"Project `{name}` created with owner `{owner}`")
+        else:
+            raise MPContribsClientError(resp.get("error", resp))
+
+    async def update(self, update: dict[str, Any], name: str | None = None) -> None:
+        """Update project info.
+
+        Args:
+            update (dict): dictionary containing project info to update
+            name (str): name of the project
+        """
+        if not update:
+            MPCC_LOGGER.warning("nothing to update")
+            return
+
+        name = self._get_name(name)
+
+        disallowed = ["stats", "columns"]
+        update = helpers.prune_dict(update, disallowed)
+        if not update:
+            return
+
+        fields = list(ContribsProject.model_fields.keys())
+        for k in disallowed:
+            fields.remove(k)
+
+        fields.append("stats.contributions")
+        project = await self.get_project_by_name(name=name, fields=fields)
+
+        # allow name update only if no contributions in project
+        if "name" in update and project.stats.contributions > 0:
+            MPCC_LOGGER.warning("removing `name` from update - not allowed.")
+            update.pop("name")
+            MPCC_LOGGER.error(
+                "cannot change project name after contributions submitted."
+            )
+
+        payload = {
+            k: v for k, v in update.items() if k in fields and project.get(k, None) != v
+        }
+        if not payload:
+            MPCC_LOGGER.warning("nothing to update")
+            return
+
+        self._is_valid_payload(cast(BaseModel, ContribsProject), payload)
+        resp = await self.put(path=f"{name}", project=payload)
+        if not resp.get("count", 0):
+            raise MPContribsClientError(resp)
