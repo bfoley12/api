@@ -14,6 +14,7 @@ from mp_api.client.contribs.pagination import paginate
 from mp_api.client.contribs.resources.base import VALID_RESOURCES, BaseResource
 from mp_api.client.contribs.resources.mpc import format_output
 from mp_api.client.core.exceptions import MPContribsClientError
+from mp_api.client.core.schemas import _DictLikeAccess
 
 
 class ProjectResource(BaseResource):
@@ -165,13 +166,12 @@ class ProjectResource(BaseResource):
                 "cannot change project name after contributions submitted."
             )
 
-        payload = {
-            k: v for k, v in update.items() if k in fields and project.get(k, None) != v
-        }
-        if not payload:
-            MPCC_LOGGER.warning("nothing to update")
-            return
-
+        # Keep payload keys if they are requested and not None/the same as the stored value
+        payload = helpers.prune_dict(
+            payload=update,
+            required_keys=fields,
+            reference=cast(_DictLikeAccess, ContribsProject),
+        )
         self._is_valid_payload(cast(BaseModel, ContribsProject), payload)
         resp = await self.put(path=f"{name}", project=payload)
         if not resp.get("count", 0):

@@ -40,6 +40,7 @@ from urllib3.util.retry import Retry
 from mp_api.client.contribs._logger import MPCC_LOGGER, TqdmToLogger
 from mp_api.client.contribs.settings import MPCC_SETTINGS
 from mp_api.client.core.exceptions import MPContribsClientError
+from mp_api.client.core.schemas import _DictLikeAccess
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Iterable, Sequence
@@ -57,32 +58,49 @@ class VALID_OPS(StrEnum):
 VALID_OPS_T = Literal[*VALID_OPS]  # type: ignore[valid-type]
 
 
-def prune_dict(d: dict[str, Any], disallowed: list[str]) -> dict[str, Any]:
+def prune_dict(
+    payload: dict[str, Any],
+    disallowed_keys: list[str] | None = None,
+    required_keys: list[str] | None = None,
+    reference: _DictLikeAccess | dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Method to clean dictionaries of disallowed keys with standardized logging.
 
     Args:
-        d (dict[str, Any]): the dict to clean
-        disallowed (list[str]): the keys to remove from d
+        payload (dict[str, Any]): the dict to clean
+        disallowed_keys (list[str]): the keys to remove from payload
+        required_keys (list[str]): fields to keepy (if None or [] all payload keys are kept)
+        reference (_DictLikeAccess | dict[str, Any]): a reference object to validate payload key-values against
     """
-    for k in list(d.keys()):
-        if k in disallowed:
-            MPCC_LOGGER.warning(f"removing `{k}` from update - not allowed.")
-            d.pop(k)
-            if k == "columns":
-                MPCC_LOGGER.info(
-                    "use `client.init_columns()` to update project columns."
+    if disallowed_keys:
+        for k in list(payload.keys()):
+            if k in disallowed_keys:
+                MPCC_LOGGER.warning(f"removing `{k}` from update - not allowed.")
+                payload.pop(k)
+                if k == "columns":
+                    MPCC_LOGGER.info(
+                        "use `client.init_columns()` to update project columns."
+                    )
+                elif k == "is_public":
+                    MPCC_LOGGER.info(
+                        "use `client.make_public/private()` to set `is_public`."
+                    )
+            elif not isinstance(payload[k], bool) and not payload[k]:
+                MPCC_LOGGER.warning(
+                    f"removing `{k}` from update - no update requested."
                 )
-            elif k == "is_public":
-                MPCC_LOGGER.info(
-                    "use `client.make_public/private()` to set `is_public`."
-                )
-        elif not isinstance(d[k], bool) and not d[k]:
-            MPCC_LOGGER.warning(f"removing `{k}` from update - no update requested.")
-            d.pop(k)
+                payload.pop(k)
 
-    if not d:
+    if required_keys:
+        payload = {k: v for k, v in payload.items() if k in required_keys}
+
+    if reference:
+        payload = {k: v for k, v in payload.items() if reference.get(k, None) != v}
+
+    if not payload:
         MPCC_LOGGER.warning("nothing to update")
-    return d
+
+    return payload
 
 
 pd.options.plotting.backend = "plotly"
