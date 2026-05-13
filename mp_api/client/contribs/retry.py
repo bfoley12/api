@@ -12,6 +12,7 @@ from tenacity import (
     wait_exponential,
 )
 
+# Brendan TODO: put into settigns
 RETRYABLE_STATUSES = frozenset({429, 502})
 
 
@@ -29,6 +30,7 @@ def standard_retry(
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]: ...
 
 
+# Brendan TODO: Use settings
 def standard_retry(
     func=None,
     /,
