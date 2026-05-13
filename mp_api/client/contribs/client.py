@@ -342,72 +342,14 @@ class ContribsClient(BaseClient):
             url=url,
         )
 
-    def update_project(self, update: dict, name: str | None = None) -> None:
+    async def update_project(self, update: dict, name: str | None = None) -> None:
         """Update project info.
 
         Args:
             update (dict): dictionary containing project info to update
             name (str): name of the project
         """
-        if not update:
-            MPCC_LOGGER.warning("nothing to update")
-            return
-
-        name = self.project or name
-        if not name:
-            raise MPContribsClientError(
-                "initialize client with project or set `name` argument!"
-            )
-
-        disallowed = ["stats", "columns"]
-        for k in list(update.keys()):
-            if k in disallowed:
-                MPCC_LOGGER.warning(f"removing `{k}` from update - not allowed.")
-                update.pop(k)
-                if k == "columns":
-                    MPCC_LOGGER.info(
-                        "use `client.init_columns()` to update project columns."
-                    )
-                elif k == "is_public":
-                    MPCC_LOGGER.info(
-                        "use `client.make_public/private()` to set `is_public`."
-                    )
-            elif not isinstance(update[k], bool) and not update[k]:
-                MPCC_LOGGER.warning(
-                    f"removing `{k}` from update - no update requested."
-                )
-                update.pop(k)
-
-        if not update:
-            MPCC_LOGGER.warning("nothing to update")
-            return
-
-        fields = list(self.get_model("ProjectsSchema")._properties.keys())
-        for k in disallowed:
-            fields.remove(k)
-
-        fields.append("stats.contributions")
-        project = self.get_project(name=name, fields=fields)
-
-        # allow name update only if no contributions in project
-        if "name" in update and project["stats"]["contributions"] > 0:
-            MPCC_LOGGER.warning("removing `name` from update - not allowed.")
-            update.pop("name")
-            MPCC_LOGGER.error(
-                "cannot change project name after contributions submitted."
-            )
-
-        payload = {
-            k: v for k, v in update.items() if k in fields and project.get(k, None) != v
-        }
-        if not payload:
-            MPCC_LOGGER.warning("nothing to update")
-            return
-
-        self._is_valid_payload("Project", payload)
-        resp = self.projects.updateProjectByName(pk=name, project=payload).result()
-        if not resp.get("count", 0):
-            raise MPContribsClientError(resp)
+        await self.projects.update(update=update, name=name)
 
     def delete_project(self, name: str | None = None) -> None:
         """Delete a project.

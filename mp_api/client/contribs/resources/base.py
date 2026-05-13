@@ -74,6 +74,7 @@ class BaseResource:
         param_spec = getattr(resource, attr).params["per_page"].param_spec
         return param_spec["default"], param_spec["maximum"]
 
+    # Brendan TODO: Old method, can probably modernize
     def _split_query(
         self,
         query: dict[str, Any],
