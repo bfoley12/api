@@ -86,6 +86,7 @@ class BaseClient:
 
         api_key, kwargs = handle_api_key(api_key, headers, **kwargs)
 
+        # Brendan TODO: Could go even further and define a Transport class for some (or all) fields. Probably too much indirection though
         self.api_key = api_key
         self.headers = headers or {}
         self.headers = {"x-api-key": api_key} if api_key else self.headers
@@ -117,3 +118,12 @@ class BaseClient:
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
+
+    @property
+    def apikey(self) -> str | None:
+        """Handle deprecated `apikey` attr."""
+        MPCC_LOGGER.warning(
+            "`apikey` has been deprecated in favor of `api_key` for "
+            " consistency with the Materials Project API client."
+        )
+        return self.api_key

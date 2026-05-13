@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Literal, cast, overload
 import httpx
 import orjson
 from jsonschema.exceptions import ValidationError
-from mp_api.client.contribs.base import BaseClient
 from pint.errors import DimensionalityError
 from pymatgen.core import Structure as PmgStructure
 from tqdm.auto import tqdm
@@ -29,10 +28,12 @@ from mp_api.client.contribs._types import (
     _Component,
 )
 from mp_api.client.contribs._units import ureg
+from mp_api.client.contribs.base import BaseClient
+from mp_api.client.contribs.models.project import ContribsProject
+from mp_api.client.contribs.resources.project import ProjectResource
 from mp_api.client.contribs.schemas import (
     CONTRIBS_DOC_NAME,
     ContribData,
-    ContribsProject,
     QueryResult,
 )
 from mp_api.client.contribs.settings import MPCC_SETTINGS
@@ -79,7 +80,7 @@ class ContribsClient(BaseClient):
             headers (dict): custom headers for localhost connections
             host (str): host address to connect to (or use MPCONTRIBS_API_HOST env var)
             project (str): use this project for all operations (query, update, create, delete)
-            _http (httpx.Client): override the httpx client to use
+            http (httpx.Client): override the httpx client to use
             use_document_model (bool) : whether to use pydantic document models by default to validate data
             kwargs : To handle deprecated class attributes
         """
@@ -91,22 +92,9 @@ class ContribsClient(BaseClient):
 
         self.use_document_model = use_document_model
 
-        self.projects = ProjectClient(self)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        return None
-
-    @property
-    def apikey(self) -> str | None:
-        """Handle deprecated `apikey` attr."""
-        MPCC_LOGGER.warning(
-            "`apikey` has been deprecated in favor of `api_key` for "
-            " consistency with the Materials Project API client."
+        self.projects = ProjectResource(
+            http=self._http, use_document_model=self.use_document_model
         )
-        return self.api_key
 
     # Brendan TODO: translate to use httpx
     # looks like it caches the data available to the user?
@@ -297,18 +285,9 @@ class ContribsClient(BaseClient):
         name = self._get_project_name(name)
 
         fields = fields or ["_all"]  # retrieve all fields by default
-        proj = self.projects.getProjectByName(pk=name, _fields=fields).result()
+        proj = self.projects.get_project_by_name(name=name, fields=fields)
 
-        return (
-            _convert_to_model(  # type: ignore[return-value]
-                [proj],
-                ContribsProject,
-                model_name=CONTRIBS_DOC_NAME,
-                requested_fields=fields,
-            )[0]
-            if self.use_document_model
-            else MPCDict(proj)
-        )
+        return proj
 
     def query_projects(
         self,
