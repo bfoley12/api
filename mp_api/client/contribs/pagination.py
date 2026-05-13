@@ -43,6 +43,10 @@ class Paginator[T: BaseModel]:
         start_page: int = 1,
         max_concurrency: int = 10,
     ) -> None:
+        """Create an instance of Paginator.
+
+        Handles pagination of results.
+        """
         self.client = client
         self.url = url
         self.page_model = page_model
