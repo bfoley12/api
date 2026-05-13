@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from enum import StrEnum
 import functools
 import importlib.metadata
 import itertools
@@ -11,6 +10,7 @@ import time
 import warnings
 from base64 import urlsafe_b64encode
 from concurrent.futures import as_completed
+from enum import StrEnum
 from pathlib import Path
 from tempfile import gettempdir
 from typing import TYPE_CHECKING, Literal
@@ -52,7 +52,38 @@ class VALID_OPS(StrEnum):
     UPDATE = "update"
     DELETE = "delete"
     DOWNLOAD = "download"
+
+
 VALID_OPS_T = Literal[*VALID_OPS]  # type: ignore[valid-type]
+
+
+def prune_dict(d: dict[str, Any], disallowed: list[str]) -> dict[str, Any]:
+    """Method to clean dictionaries of disallowed keys with standardized logging.
+
+    Args:
+        d (dict[str, Any]): the dict to clean
+        disallowed (list[str]): the keys to remove from d
+    """
+    for k in list(d.keys()):
+        if k in disallowed:
+            MPCC_LOGGER.warning(f"removing `{k}` from update - not allowed.")
+            d.pop(k)
+            if k == "columns":
+                MPCC_LOGGER.info(
+                    "use `client.init_columns()` to update project columns."
+                )
+            elif k == "is_public":
+                MPCC_LOGGER.info(
+                    "use `client.make_public/private()` to set `is_public`."
+                )
+        elif not isinstance(d[k], bool) and not d[k]:
+            MPCC_LOGGER.warning(f"removing `{k}` from update - no update requested.")
+            d.pop(k)
+
+    if not d:
+        MPCC_LOGGER.warning("nothing to update")
+    return d
+
 
 pd.options.plotting.backend = "plotly"
 pio.templates.default = "simple_white"
