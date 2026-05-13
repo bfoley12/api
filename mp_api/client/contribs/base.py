@@ -117,7 +117,7 @@ class BaseClient:
     async def aclose(self) -> None:
         await self._http.aclose()
 
-    def __aenter__(self) -> Self:
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:

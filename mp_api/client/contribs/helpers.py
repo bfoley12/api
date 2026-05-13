@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 import functools
 import importlib.metadata
 import itertools
@@ -45,7 +46,12 @@ if TYPE_CHECKING:
     from typing import Any
 
 
-VALID_OPS = {"query", "create", "update", "delete", "download"}
+class VALID_OPS(StrEnum):
+    QUERY = "query"
+    CREATE = "create"
+    UPDATE = "update"
+    DELETE = "delete"
+    DOWNLOAD = "download"
 VALID_OPS_T = Literal[*VALID_OPS]  # type: ignore[valid-type]
 
 pd.options.plotting.backend = "plotly"

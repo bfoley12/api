@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from typing import Any, overload
+from typing import Any, Awaitable, ParamSpec, overload, TypeVar
+from functools import wraps
+import asyncio
 
 import httpx
 from tenacity import (
@@ -62,3 +64,30 @@ def standard_retry(
     if func is None:
         return decorator  # used as @standard_retry(...)
     return decorator(func)  # used as @standard_retry
+
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+@overload
+def standard_timeout[**P, R](func: Callable[P, Awaitable[R]], /) -> Callable[P, Awaitable[R]]: ...
+@overload
+def standard_timeout[**P, R](
+    *, seconds: float | None = ...,
+) -> Callable[[Callable[P, Awaitable[R]]], Callable[P, Awaitable[R]]]: ...
+
+def standard_timeout(
+    func: Callable[..., Awaitable[Any]] | None = None,
+    /,
+    *,
+    seconds: float | None = 5.0,
+) -> Any:
+    """Provides a guaranteed function timeout."""
+    def decorator(f: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+        @wraps(f)
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            async with asyncio.timeout(seconds):
+                return await f(*args, **kwargs)
+        return wrapper
+    return decorator if func is None else decorator(func)
