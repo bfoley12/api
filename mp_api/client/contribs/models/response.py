@@ -11,9 +11,9 @@ from mp_api.client.core.schemas import _DictLikeAccess
 
 # Brendan TODO: Find a better name
 class Response(_DictLikeAccess):
+    model_config = {"arbitrary_types_allowed": True}
     result: JsonValue | bytes
     count: int
-    model_config = {"arbitrary_types_allowed": True}
 
     @model_validator(mode="before")
     @classmethod

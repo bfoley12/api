@@ -30,6 +30,7 @@ from mp_api.client.contribs._types import (
 from mp_api.client.contribs._units import ureg
 from mp_api.client.contribs.base import BaseClient
 from mp_api.client.contribs.models.project import ContribsProject
+from mp_api.client.contribs.resources.base import VALID_RESOURCES
 from mp_api.client.contribs.resources.project import ProjectResource
 from mp_api.client.contribs.schemas import (
     CONTRIBS_DOC_NAME,
@@ -69,7 +70,7 @@ class ContribsClient(BaseClient):
         headers: dict | None = None,
         host: str | None = None,
         project: str | None = None,
-        http: httpx.Client | None = None,
+        http: httpx.AsyncClient | None = None,
         use_document_model: bool = False,
         **kwargs,
     ) -> None:
@@ -88,11 +89,11 @@ class ContribsClient(BaseClient):
         # - forward consumer headers when connecting through localhost
 
         super().__init__(api_key=api_key, headers=headers, host=host, http=http)
-        self.project = project
 
         self.use_document_model = use_document_model
 
         self.projects = ProjectResource(
+            name=project,
             http=self._http,
             use_document_model=self.use_document_model,
             endpoint_slug="projects",
@@ -103,7 +104,11 @@ class ContribsClient(BaseClient):
     @property
     def cached_swagger_spec(self):
         return helpers._load(
-            self.protocol, self.host, self.headers_json, self.project, self.version
+            self.protocol,
+            self.host,
+            self.headers_json,
+            self.projects.name,
+            self.version,
         )
 
     # Brendan TODO: Translate
@@ -267,15 +272,7 @@ class ContribsClient(BaseClient):
 
         return [param for param in params if param.startswith(startswith)]
 
-    def _get_project_name(self, name: str | None) -> str:
-        name = self.project or name
-        if not name:
-            raise MPContribsClientError(
-                "initialize client with project or set `name` argument!"
-            )
-        return name
-
-    def get_project(
+    async def get_project(
         self, name: str | None = None, fields: list | None = None
     ) -> MPCDict | ContribsProject:
         """Retrieve a project entry.
@@ -284,14 +281,14 @@ class ContribsClient(BaseClient):
             name (str): name of the project
             fields (list): list of fields to include in response
         """
-        name = self._get_project_name(name)
+        name = self.projects._get_name(name)
 
         fields = fields or ["_all"]  # retrieve all fields by default
-        proj = self.projects.get_project_by_name(name=name, fields=fields)
+        proj = await self.projects.get_project_by_name(name=name, fields=fields)
 
         return proj
 
-    def query_projects(
+    async def query_projects(
         self,
         query: dict | None = None,
         term: str | None = None,
@@ -315,82 +312,10 @@ class ContribsClient(BaseClient):
             List of projects as validated `ContribsProject`s
                 (use_document_model = True) and `dict`s (otherwise).
         """
-        self.projects.query(
-            query=query, term=term, fields=fields, sort=sort, timeout=timeout
+        resp = await self.projects.query(
+            query=query, term=term, fields=fields, sort=sort, _timeout=timeout
         )
-        query = query or {}
-
-        if self.project or "name" in query:
-            return [self.get_project(name=query.get("name"), fields=fields)]  # type: ignore[return-value]
-
-        if term:
-
-            def search_future(search_term):
-                future = self.session.get(
-                    f"{self.url}/projects/search",
-                    headers=self.headers,
-                    hooks={"response": helpers._response_hook},
-                    params={"term": search_term},
-                )
-                future.track_id = "search"
-                return future
-
-            responses = helpers._run_futures(
-                [search_future(term)], timeout=timeout, disable=True
-            )
-            query["name__in"] = responses["search"].get("result", [])
-
-        if fields:
-            query["_fields"] = fields
-        if sort:
-            query["_sort"] = sort
-
-        ret = self.projects.queryProjects(**query).result()  # first page
-        total_count, total_pages = ret["total_count"], ret["total_pages"]
-
-        if total_pages < 2:
-            return (
-                _convert_to_model(  # type: ignore[return-value]
-                    ret["data"],
-                    ContribsProject,
-                    model_name=CONTRIBS_DOC_NAME,
-                    requested_fields=fields,
-                )
-                if self.use_document_model
-                else ret["data"]
-            )
-
-        query.update(
-            {
-                field: ",".join(query[field])
-                for field in ["name__in", "_fields"]
-                if field in query
-            }
-        )
-
-        queries = []
-
-        for page in range(2, total_pages + 1):
-            queries.append(deepcopy(query))
-            queries[-1]["page"] = page
-
-        futures = [
-            self._get_future(i, q, rel_url="projects") for i, q in enumerate(queries)
-        ]
-        responses = helpers._run_futures(futures, total=total_count, timeout=timeout)
-
-        ret["data"].extend([resp["result"]["data"] for resp in responses.values()])
-
-        return (
-            _convert_to_model(  # type: ignore[return-value]
-                ret["data"],
-                ContribsProject,
-                model_name=CONTRIBS_DOC_NAME,
-                requested_fields=fields,
-            )
-            if self.use_document_model
-            else ret["data"]
-        )
+        return resp
 
     def create_project(
         self, name: str, title: str, authors: str, description: str, url: str
@@ -852,12 +777,21 @@ class ContribsClient(BaseClient):
                 f"There were errors and {left} contributions are left to delete!"
             )
 
+    def scan_projects(
+        self,
+        query: dict[str, Any] | None = None,
+        _timeout: int = -1,
+        op: helpers.VALID_OPS = helpers.VALID_OPS.QUERY,
+    ) -> tuple[int, int]:
+        res = self.projects.scan(query, _timeout, op)
+        return res
+
     def get_totals(
         self,
         query: dict | None = None,
         timeout: int = -1,
-        resource: str = "contributions",
-        op: helpers.VALID_OPS_T = "query",
+        resource: VALID_RESOURCES = VALID_RESOURCES.CONTRIBUTIONS,
+        op: helpers.VALID_OPS = helpers.VALID_OPS.QUERY,
     ) -> tuple[int, int]:
         """Retrieve total count and pages for resource entries matching query.
 
