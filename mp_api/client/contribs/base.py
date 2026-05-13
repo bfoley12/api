@@ -69,7 +69,7 @@ class BaseClient:
         api_key: str | None = MPCC_SETTINGS.API_KEY,
         headers: dict | None = None,
         host: str | None = None,
-        http: httpx.Client | None = None,
+        http: httpx.AsyncClient | None = None,
         **kwargs,
     ) -> None:
         """Initialize the client - only reloads API spec from server as needed.
@@ -98,7 +98,6 @@ class BaseClient:
         ssl = self.host.endswith(".materialsproject.org") and not self.host.startswith(
             "localhost."
         )
-        self._http = http if http is not None else httpx.Client()
         self.protocol = "https" if ssl else "http"
         self.url = f"{self.protocol}://{self.host}"
 
@@ -108,16 +107,21 @@ class BaseClient:
                 f"{', '.join(MPCC_SETTINGS.VALID_URLS)})"
             )
 
+        self._http = (
+            http
+            if http is not None
+            else httpx.AsyncClient(base_url=self.url, headers=headers)
+        )
         self.version = helpers._version(self.url)  # includes healthcheck
 
-    def close(self) -> None:
-        self._http.close()
+    async def aclose(self) -> None:
+        await self._http.aclose()
 
-    def __enter__(self) -> Self:
+    def __aenter__(self) -> Self:
         return self
 
-    def __exit__(self, *exc_info: object) -> None:
-        self.close()
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.aclose()
 
     @property
     def apikey(self) -> str | None:

@@ -93,7 +93,9 @@ class ContribsClient(BaseClient):
         self.use_document_model = use_document_model
 
         self.projects = ProjectResource(
-            http=self._http, use_document_model=self.use_document_model
+            http=self._http,
+            use_document_model=self.use_document_model,
+            endpoint_slug="projects",
         )
 
     # Brendan TODO: translate to use httpx
@@ -313,6 +315,9 @@ class ContribsClient(BaseClient):
             List of projects as validated `ContribsProject`s
                 (use_document_model = True) and `dict`s (otherwise).
         """
+        self.projects.query(
+            query=query, term=term, fields=fields, sort=sort, timeout=timeout
+        )
         query = query or {}
 
         if self.project or "name" in query:
