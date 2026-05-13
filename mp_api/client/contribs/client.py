@@ -175,9 +175,9 @@ class ContribsClient(BaseClient):
     # Brendan TODO: Translate
     def _split_query(
         self,
-        query: dict,
-        op: helpers.VALID_OPS_T = "query",
-        resource: str = "contributions",
+        query: dict[str, Any],
+        op: helpers.VALID_OPS = helpers.VALID_OPS.QUERY,
+        resource: VALID_RESOURCES = VALID_RESOURCES.CONTRIBUTIONS,
         pages: int = -1,
     ) -> list[dict]:
         """Avoid URI too long errors."""
@@ -317,8 +317,13 @@ class ContribsClient(BaseClient):
         )
         return resp
 
-    def create_project(
-        self, name: str, title: str, authors: str, description: str, url: str
+    async def create_project(
+        self,
+        name: str,
+        title: str,
+        authors: str,
+        description: str,
+        url: str,
     ) -> None:
         """Create a project.
 
@@ -329,26 +334,13 @@ class ContribsClient(BaseClient):
             description (str): brief description (max 2000 characters)
             url (str): URL for primary reference (paper/website/...)
         """
-        queries = [{"name": name}, {"title": title}]
-        for query in queries:
-            if self.get_totals(query=query, resource="projects")[0]:
-                raise MPContribsClientError(f"Project with {query} already exists!")
-
-        project = ContribsProject(
-            **{  # type: ignore[arg-type]
-                "name": name,
-                "title": title,
-                "authors": authors,
-                "description": description,
-                "references": [{"label": "REF", "url": url}],
-            }
+        await self.projects.create(
+            name=name,
+            title=title,
+            authors=authors,
+            description=description,
+            url=url,
         )
-        resp = self.projects.createProject(project=project.to_draft()).result()
-        owner = resp.get("owner")
-        if owner:
-            MPCC_LOGGER.info(f"Project `{name}` created with owner `{owner}`")
-        else:
-            raise MPContribsClientError(resp.get("error", resp))
 
     def update_project(self, update: dict, name: str | None = None) -> None:
         """Update project info.
