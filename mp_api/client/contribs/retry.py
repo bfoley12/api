@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
-from typing import Any, Awaitable, ParamSpec, overload, TypeVar
-from functools import wraps
 import asyncio
+from collections.abc import Awaitable, Callable, Iterable
+from functools import wraps
+from typing import Any, ParamSpec, TypeVar, overload
 
 import httpx
 from tenacity import (
@@ -71,11 +71,15 @@ R = TypeVar("R")
 
 
 @overload
-def standard_timeout[**P, R](func: Callable[P, Awaitable[R]], /) -> Callable[P, Awaitable[R]]: ...
+def standard_timeout[**P, R](
+    func: Callable[P, Awaitable[R]], /
+) -> Callable[P, Awaitable[R]]: ...
 @overload
 def standard_timeout[**P, R](
-    *, seconds: float | None = ...,
+    *,
+    seconds: float | None = ...,
 ) -> Callable[[Callable[P, Awaitable[R]]], Callable[P, Awaitable[R]]]: ...
+
 
 def standard_timeout(
     func: Callable[..., Awaitable[Any]] | None = None,
@@ -84,10 +88,13 @@ def standard_timeout(
     seconds: float | None = 5.0,
 ) -> Any:
     """Provides a guaranteed function timeout."""
+
     def decorator(f: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
         @wraps(f)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             async with asyncio.timeout(seconds):
                 return await f(*args, **kwargs)
+
         return wrapper
+
     return decorator if func is None else decorator(func)
