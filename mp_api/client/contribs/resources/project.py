@@ -176,3 +176,20 @@ class ProjectResource(BaseResource):
         resp = await self.put(path=f"{name}", project=payload)
         if not resp.get("count", 0):
             raise MPContribsClientError(resp)
+
+    # Named remove to avoid overriding the base.delete method, which is an http request
+    async def remove(self, name: str | None = None) -> None:
+        """Delete a project.
+
+        Args:
+            name (str): name of the project
+        """
+        name = self._get_name(name)
+
+        # Brendan TODO: Make a 'require_record' policy?
+        if not self.scan(query={"name": name}, resource=VALID_RESOURCES.PROJECTS):
+            raise MPContribsClientError(f"Project `{name}` doesn't exist!")
+
+        resp = await self.delete(pk=name)
+        if resp and "error" in resp:
+            raise MPContribsClientError(resp["error"])

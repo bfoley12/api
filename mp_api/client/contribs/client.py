@@ -351,24 +351,13 @@ class ContribsClient(BaseClient):
         """
         await self.projects.update(update=update, name=name)
 
-    def delete_project(self, name: str | None = None) -> None:
+    async def delete_project(self, name: str | None = None) -> None:
         """Delete a project.
 
         Args:
             name (str): name of the project
         """
-        name = self.project or name
-        if not name:
-            raise MPContribsClientError(
-                "initialize client with project or set `name` argument!"
-            )
-
-        if not self.get_totals(query={"name": name}, resource="projects")[0]:
-            raise MPContribsClientError(f"Project `{name}` doesn't exist!")
-
-        resp = self.projects.deleteProjectByName(pk=name).result()
-        if resp and "error" in resp:
-            raise MPContribsClientError(resp["error"])
+        await self.projects.remove(name)
 
     def get_contribution(
         self, cid: str, fields: list | None = None
