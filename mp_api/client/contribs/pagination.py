@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import math
 from collections.abc import AsyncIterator
-from typing import Generic, TypeVar
+from typing import TypeVar
 
 import httpx
 from pydantic import BaseModel
@@ -12,7 +12,14 @@ from pydantic import BaseModel
 T = TypeVar("T", bound=BaseModel)
 
 
-class Page(BaseModel, Generic[T]):
+class PageMeta(BaseModel):
+    total_count: int
+    total_pages: int
+    per_page: int
+    page: int
+
+
+class Page[T: BaseModel](BaseModel):
     """Default page envelope. Subclass if your API uses different field names."""
 
     items: list[T]
@@ -22,7 +29,7 @@ class Page(BaseModel, Generic[T]):
         return math.ceil(self.total / per_page) if per_page else 1
 
 
-class Paginator(Generic[T]):
+class Paginator[T: BaseModel]:
     def __init__(
         self,
         client: httpx.AsyncClient,
@@ -90,7 +97,7 @@ class Paginator(Generic[T]):
             page_num += 1
 
 
-async def paginate(
+async def paginate[T: BaseModel](
     client: httpx.AsyncClient,
     url: str,
     item_model: type[T],
