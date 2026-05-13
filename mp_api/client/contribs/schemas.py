@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any, Literal, Self, get_args
+from typing import TYPE_CHECKING, Any, Self, get_args
 
 import pandas as pd
 from emmet.core.types.typing import DateTimeType
@@ -130,77 +130,6 @@ def _get_pydantic_from_dataframe(
     return create_model(
         "InferredModel", __base__=_DictLikeAccess, **model_fields
     ), columns_renamed  # type: ignore[call-overload]
-
-
-class Reference(_DictLikeAccess):
-    """Define schema of URL reference."""
-
-    label: str
-    url: str
-
-
-class Column(_DictLikeAccess):
-    """Define schema of MP Contribs column statistics."""
-
-    path: str
-    min: float | None = float("nan")
-    max: float | None = float("nan")
-    unit: str = "NaN"
-
-
-class Stats(_DictLikeAccess):
-    """Define aggregated project statistics schema."""
-
-    columns: int = 0
-    contributions: int = 0
-    tables: int = 0
-    structures: int = 0
-    attachments: int = 0
-    size: float = 0.0
-
-
-class ContribsProject(_DictLikeAccess):
-    """Define schema for MP Contribs Project."""
-
-    name: str | None = None
-    title: str | None = None
-    authors: str | None = None
-    description: str | None = None
-    references: list[Reference] | None = None
-    stats: Stats = Field(default_factory=Stats)
-
-    columns: list[Column] = []
-    long_title: str | None = None
-    is_public: bool = False
-    is_approved: bool = False
-    unique_identifiers: bool = True
-    license: Literal["CCA4", "CCPD"] = "CCA4"
-    owner: str | None = None
-    other: dict[str, Any] | None = None
-
-    @field_validator("other", mode="before")
-    def flatten_other(cls, d: dict) -> dict[str, str | None]:
-        """Flatten column metadata."""
-        if all(isinstance(v, str) for v in d.values()):
-            return d
-        return flatten_dict(d)
-
-    @field_serializer("other", mode="plain")
-    def unflatten_other(self, v: dict[str, str]) -> dict[str, Any]:
-        """Unflatten column metadata."""
-        return unflatten_dict(v or {})
-
-    def to_draft(self) -> dict[str, Any]:
-        """Strip out fields that cannot be used in creating a project.
-
-        The API forbids including `is_public` and `is_approved` when
-        submitting a project, even if these fields are False.
-        """
-        return {
-            k: v
-            for k, v in self.model_dump().items()
-            if k not in {"is_approved", "is_public"}
-        }
 
 
 class ContribMeta(_DictLikeAccess):
