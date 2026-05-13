@@ -1,15 +1,18 @@
-from mp_api.client.contribs.settings import MPCC_SETTINGS
-from mp_api.client.contribs._logger import MPCC_LOGGER
-import httpx
-from typing import TYPE_CHECKING
+from __future__ import annotations
 
+from typing import TYPE_CHECKING, Self
+
+import httpx
 import orjson
 
 from mp_api.client.contribs import helpers
+from mp_api.client.contribs._logger import MPCC_LOGGER
+from mp_api.client.contribs.settings import MPCC_SETTINGS
 from mp_api.client.core.exceptions import MPContribsClientError
 
 if TYPE_CHECKING:
     from typing import Any
+
 
 def handle_api_key(
     api_key: str | None, headers: dict[str, Any] | None, **kwargs
@@ -50,6 +53,7 @@ def handle_api_key(
 
     return api_key, kwargs
 
+
 class BaseClient:
     """client to connect to MPContribs API.
 
@@ -74,9 +78,7 @@ class BaseClient:
             api_key (str): API key (or use MPCONTRIBS_API_KEY env var) - ignored if headers set
             headers (dict): custom headers for localhost connections
             host (str): host address to connect to (or use MPCONTRIBS_API_HOST env var)
-            project (str): use this project for all operations (query, update, create, delete)
-            _http (httpx.Client): override the httpx client to use
-            use_document_model (bool) : whether to use pydantic document models by default to validate data
+            http (httpx.Client): override the httpx client to use
             kwargs : To handle deprecated class attributes
         """
         # - Kong forwards consumer headers when api-key used for auth
@@ -95,6 +97,7 @@ class BaseClient:
         ssl = self.host.endswith(".materialsproject.org") and not self.host.startswith(
             "localhost."
         )
+        self._http = http if http is not None else httpx.Client()
         self.protocol = "https" if ssl else "http"
         self.url = f"{self.protocol}://{self.host}"
 
@@ -105,3 +108,12 @@ class BaseClient:
             )
 
         self.version = helpers._version(self.url)  # includes healthcheck
+
+    def close(self) -> None:
+        self._http.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
