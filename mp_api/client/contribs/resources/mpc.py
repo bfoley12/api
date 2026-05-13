@@ -1,4 +1,3 @@
-# Brendan TODO: flesh out and allow classes to inherit from in order to convert to MPCDict
 from __future__ import annotations
 
 from functools import wraps
