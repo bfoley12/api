@@ -54,7 +54,7 @@ def handle_api_key(
     return api_key, kwargs
 
 
-class BaseClient:
+class AsyncBaseClient:
     """client to connect to MPContribs API.
 
     Typical usage:

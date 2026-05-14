@@ -28,10 +28,13 @@ from mp_api.client.contribs._types import (
     _Component,
 )
 from mp_api.client.contribs._units import ureg
-from mp_api.client.contribs.base import BaseClient
+from mp_api.client.contribs.base import AsyncBaseClient
 from mp_api.client.contribs.models.project import ContribsProject
 from mp_api.client.contribs.resources.base import VALID_RESOURCES
-from mp_api.client.contribs.resources.project import ProjectResource
+from mp_api.client.contribs.resources.project import (
+    AsyncProjectProtocol,
+    AsyncProjectResource,
+)
 from mp_api.client.contribs.schemas import (
     CONTRIBS_DOC_NAME,
     ContribData,
@@ -54,7 +57,7 @@ if TYPE_CHECKING:
     )
 
 
-class ContribsClient(BaseClient):
+class AsyncContribsClient(AsyncBaseClient):
     """client to connect to MPContribs API.
 
     Typical usage:
@@ -92,7 +95,7 @@ class ContribsClient(BaseClient):
 
         self.use_document_model = use_document_model
 
-        self.projects = ProjectResource(
+        self.projects: AsyncProjectProtocol = AsyncProjectResource(
             name=project,
             http=self._http,
             use_document_model=self.use_document_model,

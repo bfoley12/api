@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 import httpx
 from pydantic import BaseModel
@@ -11,13 +11,42 @@ from mp_api.client.contribs.models.project import ContribsProject
 from mp_api.client.contribs.models.reference import Reference
 from mp_api.client.contribs.models.response import Response
 from mp_api.client.contribs.pagination import paginate
-from mp_api.client.contribs.resources.base import VALID_RESOURCES, BaseResource
+from mp_api.client.contribs.resources.base import VALID_RESOURCES, AsyncBaseResource
 from mp_api.client.contribs.resources.mpc import format_output
 from mp_api.client.core.exceptions import MPContribsClientError
 from mp_api.client.core.schemas import _DictLikeAccess
 
 
-class ProjectResource(BaseResource):
+class AsyncProjectProtocol(Protocol):
+    async def get_project_by_name(
+        self, name: str, fields: list[Any] | None
+    ) -> ContribsProject: ...
+
+    async def query(
+        self,
+        # Brendan TODO: define query as a Pydantic model?
+        query: dict[str, Any] | None,
+        term: str | None = None,
+        fields: list[str] | None = None,
+        sort: str | None = None,
+        _timeout: int = -1,
+    ) -> list[ContribsProject]: ...
+
+    async def create(
+        self,
+        name: str,
+        title: str,
+        authors: str,
+        description: str,
+        url: str,
+    ) -> None: ...
+
+    async def update(self, update: dict[str, Any], name: str | None = None) -> None: ...
+
+    async def remove(self, name: str | None = None) -> None: ...
+
+
+class AsyncProjectResource(AsyncBaseResource, AsyncProjectProtocol):
     def __init__(
         self,
         name: str | None,

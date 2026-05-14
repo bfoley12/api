@@ -22,7 +22,7 @@ class VALID_RESOURCES(StrEnum):
     CONTRIBUTIONS = "contributions"
 
 
-class BaseResource:
+class AsyncBaseResource:
     """Shared HTTP behavior. Does not own the pool."""
 
     def __init__(
