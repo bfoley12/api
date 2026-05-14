@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Literal, cast, overload
 
 import httpx
 import orjson
-from jsonschema.exceptions import ValidationError
 from pint.errors import DimensionalityError
 from pymatgen.core import Structure as PmgStructure
 from tqdm.auto import tqdm
@@ -267,6 +266,47 @@ class AsyncContribsClient(AsyncBaseClient):
         """
         return await self.contributions.get_by_id(id=cid, fields=fields)
 
+    async def delete_contributions(
+        self, query: dict | None = None, timeout: int = -1
+    ) -> None:
+        """Remove all contributions for a query.
+
+        Args:
+            query (dict): optional query to select contributions
+            timeout (int): cancel remaining requests if timeout exceeded (in seconds)
+        """
+        if not self.projects.name and (not query or "project" not in query):
+            raise MPContribsClientError(
+                "initialize client with project, or include project in query!"
+            )
+
+        query = query or {}
+
+        if self.projects.name:
+            query["project"] = self.projects.name
+
+        name = query["project"]
+        project_ids = list(
+            (await self.get_all_ids(query, fmt="sets")).get(name, {}).keys()
+        )
+
+        tic = time.perf_counter()
+        # Brendan TODO: Confirm atomic deletion
+        num_deleted = await self.contributions.remove(
+            project_ids=project_ids, query=query, _timeout=timeout
+        )
+        _ = await self.projects.init_columns(name=name)
+        self._reinit()
+        toc = time.perf_counter()
+        dt = (toc - tic) / 60
+        MPCC_LOGGER.info(f"It took {dt:.1f}min to delete {num_deleted} contributions.")
+
+        # Deletion should be atomic
+        # if left:
+        #     raise MPContribsClientError(
+        #         f"There were errors and {left} contributions are left to delete!"
+        #     )
+
     def get_table(self, tid_or_md5: str) -> Table:
         """Retrieve full Pandas DataFrame for a table.
 
@@ -365,7 +405,7 @@ class AsyncContribsClient(AsyncBaseClient):
             self.attachments.getAttachmentById(pk=aid, _fields=["_all"]).result()
         )
 
-    def init_columns(
+    async def init_columns(
         self, columns: dict | None = None, name: str | None = None
     ) -> dict:
         """Initialize columns for a project to set their order and desired units.
@@ -404,190 +444,22 @@ class AsyncContribsClient(AsyncBaseClient):
         Returns:
             dict containing metadata about the column updates
         """
-        name = self.project or name
-        if not name:
-            raise MPContribsClientError(
-                "initialize client with project or set `name` argument!"
-            )
+        return (
+            await self.projects.init_columns(columns=columns, name=name)
+        ).model_dump()
 
-        columns = flatten_dict(columns or {})
-
-        if len(columns) > MPCC_SETTINGS.MAX_COLUMNS:
-            raise MPContribsClientError(
-                f"Number of columns larger than {MPCC_SETTINGS.MAX_COLUMNS}!"
-            )
-
-        if not all(isinstance(v, str) for v in columns.values() if v is not None):
-            raise MPContribsClientError(
-                "All values in `columns` need to be None or of type str!"
-            )
-
-        new_columns = []
-
-        if columns:
-            # check columns input
-            scanned_columns = set()
-
-            for k, v in columns.items():
-                if k in MPCC_SETTINGS.COMPONENTS:
-                    scanned_columns.add(k)
-                    continue
-
-                nesting = k.count(".")
-                if nesting > MPCC_SETTINGS.MAX_NESTING:
-                    raise MPContribsClientError(
-                        f"Nesting depth larger than {MPCC_SETTINGS.MAX_NESTING} for {k}!"
-                    )
-
-                for col in scanned_columns:
-                    if nesting and col.startswith(k):
-                        raise MPContribsClientError(
-                            f"Duplicate definition of {k} in {col}!"
-                        )
-
-                    for n in range(1, nesting + 1):
-                        if k.rsplit(".", n)[0] == col:
-                            raise MPContribsClientError(
-                                f"Ancestor of {k} already defined in {col}!"
-                            )
-
-                is_valid_string = isinstance(v, str) and v.lower() != "nan"
-                if not is_valid_string and v is not None:
-                    raise MPContribsClientError(
-                        f"Unit '{v}' for {k} invalid (use `None` or a non-NaN string)!"
-                    )
-
-                if v != "" and v is not None and v not in ureg:
-                    raise MPContribsClientError(f"Unit '{v}' for {k} not supported!")
-
-                scanned_columns.add(k)
-
-            # sort to avoid "overlapping columns" error in handsontable's NestedHeaders
-            sorted_columns = flatten_dict(unflatten_dict(columns))
-            # also sort by increasing nesting for better columns display
-            sorted_columns = dict(
-                sorted(sorted_columns.items(), key=lambda item: item[0].count("."))
-            )
-
-            # TODO catch unsupported column renaming or implement solution
-            # reconcile with existing columns
-            resp = self.projects.getProjectByName(pk=name, _fields=["columns"]).result()
-            existing_columns = {}
-
-            for col in resp["columns"]:
-                path = col.pop("path")
-                existing_columns[path] = col
-
-            for path, unit in sorted_columns.items():
-                if path in MPCC_SETTINGS.COMPONENTS:
-                    new_columns.append({"path": path})
-                    continue
-
-                full_path = f"data.{path}"
-                new_column = {"path": full_path}
-                existing_column = existing_columns.get(full_path)
-
-                if unit is not None:
-                    new_column["unit"] = unit
-
-                if existing_column:
-                    # NOTE if existing_unit == "NaN":
-                    #   it was set by omitting "unit" in new_column
-                    new_unit = new_column.get("unit", "NaN")
-                    existing_unit = existing_column.get("unit")
-                    if existing_unit != new_unit:
-                        if existing_unit == "NaN" and new_unit == "":
-                            factor = 1
-                        else:
-                            conv_args = []
-                            for u in [existing_unit, new_unit]:
-                                try:
-                                    conv_args.append(ureg.Unit(u))
-                                except ValueError:
-                                    raise MPContribsClientError(
-                                        f"Can't convert {existing_unit} to {new_unit} for {path}"
-                                    )
-                            try:
-                                factor = ureg.convert(1, *conv_args)  # type: ignore[arg-type]
-                            except DimensionalityError:
-                                raise MPContribsClientError(
-                                    f"Can't convert {existing_unit} to {new_unit} for {path}"
-                                )
-
-                        if not isclose(factor, 1):
-                            MPCC_LOGGER.info(
-                                f"Changing {existing_unit} to {new_unit} for {path} ..."
-                            )
-                            # TODO scale contributions to new unit
-                            raise MPContribsClientError(
-                                "Changing units not supported yet. Please resubmit"
-                                " contributions or update accordingly."
-                            )
-
-                new_columns.append(new_column)
-
-        payload = {"columns": new_columns}
-        self._is_valid_payload("Project", payload)
-
-        return self.projects.updateProjectByName(pk=name, project=payload).result()
-
-    def delete_contributions(
-        self, query: dict | None = None, timeout: int = -1
-    ) -> None:
-        """Remove all contributions for a query.
-
-        Args:
-            query (dict): optional query to select contributions
-            timeout (int): cancel remaining requests if timeout exceeded (in seconds)
-        """
-        if not self.project and (not query or "project" not in query):
-            raise MPContribsClientError(
-                "initialize client with project, or include project in query!"
-            )
-
-        tic = time.perf_counter()
-        query = query or {}
-
-        if self.project:
-            query["project"] = self.project
-
-        name = query["project"]
-        project_ids = self.get_all_ids(query).get(name)
-        cids = list(self._project_contrib_ids(project_ids))
-
-        if not cids:
-            MPCC_LOGGER.info(f"There aren't any contributions to delete for {name}")
-            return
-
-        total = len(cids)
-        query = {"id__in": cids}
-        _, total_pages = self.get_totals(query=query)
-        queries = self._split_query(query, op="delete", pages=total_pages)
-        futures = [self._get_future(i, q, op="delete") for i, q in enumerate(queries)]
-        helpers._run_futures(futures, total=total, timeout=timeout)
-        left, _ = self.get_totals(query=query)
-        deleted = total - left
-        self.init_columns(name=name)
-        self._reinit()
-        toc = time.perf_counter()
-        dt = (toc - tic) / 60
-        MPCC_LOGGER.info(f"It took {dt:.1f}min to delete {deleted} contributions.")
-
-        if left:
-            raise MPContribsClientError(
-                f"There were errors and {left} contributions are left to delete!"
-            )
-
-    def scan_projects(
+    async def scan_projects(
         self,
         query: dict[str, Any] | None = None,
-        _timeout: int = -1,
+        timeout: int = -1,
         op: helpers.VALID_OPS = helpers.VALID_OPS.QUERY,
     ) -> tuple[int, int]:
-        res = self.projects.scan(query, _timeout, op)
+        res = await self.projects.scan(
+            query=query, resource=VALID_RESOURCES.PROJECTS, op=op, _timeout=timeout
+        )
         return res
 
-    def get_totals(
+    async def get_totals(
         self,
         query: dict | None = None,
         timeout: int = -1,
@@ -606,34 +478,19 @@ class AsyncContribsClient(AsyncBaseClient):
         Returns:
             tuple of total counts (int) and pages (int)
         """
-        if op not in helpers.VALID_OPS:
-            raise MPContribsClientError(f"`op` has to be one of {helpers.VALID_OPS}")
+        if resource == VALID_RESOURCES.PROJECTS:
+            return await self.projects.scan(
+                query=query, resource=resource, op=op, _timeout=timeout
+            )
+        return await self.contributions.scan(
+            query=query, resource=resource, op=op, _timeout=timeout
+        )
 
-        query = query or {}
-        if self.project and "project" not in query:
-            query["project"] = self.project
-
-        skip_keys = {"per_page", "_fields", "format", "_sort"}
-        query = {k: v for k, v in query.items() if k not in skip_keys}
-        query["_fields"] = []  # only need totals -> explicitly request no fields
-        queries = self._split_query(query, resource=resource, op=op)  # don't paginate
-        futures = [
-            self._get_future(i, q, rel_url=resource) for i, q in enumerate(queries)
-        ]
-        responses = helpers._run_futures(futures, timeout=timeout, desc="Totals")
-
-        result = {
-            k: sum(resp.get("result", {}).get(k, 0) for resp in responses.values())
-            for k in ("total_count", "total_pages")
-        }
-
-        return result["total_count"], result["total_pages"]
-
-    def count(self, query: dict | None = None) -> int:
+    async def count(self, query: dict | None = None) -> int:
         """Shortcut for get_totals()."""
-        return self.get_totals(query=query)[0]
+        return (await self.get_totals(query=query))[0]
 
-    def get_unique_identifiers_flags(
+    async def get_unique_identifiers_flags(
         self, query: dict[str, Any] | None = None
     ) -> dict[str, bool]:
         """Retrieve values for `unique_identifiers` flags.
@@ -647,61 +504,25 @@ class AsyncContribsClient(AsyncBaseClient):
             dict of str to bool, ex.:
             {"<project-name>": True|False, ...}
         """
-        return {
-            p["name"]: p["unique_identifiers"]
-            for p in self.query_projects(
-                query=query, fields=["name", "unique_identifiers"]
-            )
-        }
+        return await self.projects.get_unique_identifiers_flags(query=query)
 
-    def _get_contrib_identifier_payloads(
+    async def _get_contrib_identifier_payloads(
         self,
         query: dict[str, Any] | None = None,
         include: list[str] | None = None,
         timeout: int = -1,
         data_id_fields: dict[str, str] | None = None,
-        op: helpers.VALID_OPS_T = "query",
     ) -> tuple[list[dict[str, Any]], set[str], dict[str, str], dict[str, bool]]:
-        include = include or []
-        components = {x for x in include if x in MPCC_SETTINGS.COMPONENTS}
-        if include and not components:
-            raise MPContribsClientError(
-                f"`include` must be subset of {MPCC_SETTINGS.COMPONENTS}!"
-            )
-
-        if op not in helpers.VALID_OPS:
-            raise MPContribsClientError(f"`op` has to be one of {helpers.VALID_OPS}")
-
-        unique_identifiers = self.get_unique_identifiers_flags()
-        data_id_fields = {
-            project: field
-            for project, field in (data_id_fields or {}).items()
-            if project in unique_identifiers and isinstance(field, str)
-        }
-
-        query = query or {}
-        if self.project and "project" not in query:
-            query["project"] = self.project
-
-        for k in ["page", "per_page", "_fields"]:
-            query.pop(k, None)
-
-        id_fields = {"project", "id", "identifier"}
-        if data_id_fields:
-            id_fields.update(f"data.{field}" for field in data_id_fields.values())
-
-        query["_fields"] = list(id_fields | components)
-        _, total_pages = self.get_totals(query=query, timeout=timeout)
-        queries = self._split_query(query, op=op, pages=total_pages)
-        futures = [self._get_future(i, q) for i, q in enumerate(queries)]
-        responses = helpers._run_futures(futures, timeout=timeout, desc="Identifiers")
-
-        contributions: list[dict[str, Any]] = []
-        for resp in responses.values():
-            result = resp.get("result", {})
-            data = result.get("data", [])
-            if isinstance(data, list):
-                contributions.extend(data)
+        (
+            contributions,
+            components,
+            data_id_fields,
+        ) = await self.contributions._get_contrib_identifier_payloads(
+            query=query,
+            include=include,
+            timeout=timeout,
+            data_id_fields=data_id_fields,
+        )
 
         return contributions, components, data_id_fields, unique_identifiers
 
@@ -831,35 +652,32 @@ class AsyncContribsClient(AsyncBaseClient):
         return ids if isinstance(ids, set) else set()
 
     @overload
-    def get_all_ids(
+    async def get_all_ids(
         self,
         query: dict[str, Any] | None = None,
         include: list[str] | None = None,
         timeout: int = -1,
         data_id_fields: dict[str, str] | None = None,
         fmt: Literal["sets"] = "sets",
-        op: helpers.VALID_OPS_T = "query",
     ) -> AllIdSets: ...
 
     @overload
-    def get_all_ids(
+    async def get_all_ids(
         self,
         query: dict[str, Any] | None = None,
         include: list[str] | None = None,
         timeout: int = -1,
         data_id_fields: dict[str, str] | None = None,
         fmt: Literal["map"] = "map",
-        op: helpers.VALID_OPS_T = "query",
     ) -> AllIdMap: ...
 
-    def get_all_ids(
+    async def get_all_ids(
         self,
         query: dict[str, Any] | None = None,
         include: list[str] | None = None,
         timeout: int = -1,
         data_id_fields: dict[str, str] | None = None,
         fmt: Literal["sets", "map"] = "sets",
-        op: helpers.VALID_OPS_T = "query",
     ) -> AllIdSets | AllIdMap:
         """Retrieve a list of existing contribution and component (Object)IDs.
 
@@ -908,46 +726,29 @@ class AsyncContribsClient(AsyncBaseClient):
             }, ...}
         """
         q = deepcopy(query or {})  # prevent modifying user query
+        unique_identifiers = await self.projects.get_unique_identifiers_flags()
+        (
+            contributions,
+            components,
+            clean_data_id_fields,
+        ) = await self.contributions._get_contrib_identifier_payloads(
+            query=q,
+            include=include,
+            data_id_fields=data_id_fields,
+            _timeout=timeout,
+        )
         if fmt == "sets":
-            (
-                contributions,
-                components,
-                clean_data_id_fields,
-                _,
-            ) = self._get_contrib_identifier_payloads(
-                query=q,
-                include=include,
-                timeout=timeout,
-                data_id_fields=data_id_fields,
-                op=op,
-            )
             return self._collect_ids_as_sets(
                 contributions=contributions,
                 components=components,
                 data_id_fields=clean_data_id_fields,
             )
-
-        if fmt == "map":
-            (
-                contributions,
-                components,
-                clean_data_id_fields,
-                unique_identifiers,
-            ) = self._get_contrib_identifier_payloads(
-                query=q,
-                include=include,
-                timeout=timeout,
-                data_id_fields=data_id_fields,
-                op=op,
-            )
-            return self._collect_ids_as_map(
-                contributions=contributions,
-                components=components,
-                data_id_fields=clean_data_id_fields,
-                unique_identifiers=unique_identifiers,
-            )
-
-        raise MPContribsClientError("`fmt` must be one of {'sets', 'map'}!")
+        return self._collect_ids_as_map(
+            contributions=contributions,
+            components=components,
+            data_id_fields=clean_data_id_fields,
+            unique_identifiers=unique_identifiers,
+        )
 
     def query_contributions(
         self,
