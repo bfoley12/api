@@ -127,18 +127,6 @@ class AsyncContribsClient(AsyncBaseClient):
         super().__init__(self.cached_swagger_spec)
 
     # Brendan TODO: Translate
-    def _is_valid_payload(self, model: str, data: dict) -> None:
-        """Raise an error if a payload is invalid."""
-        model_spec = deepcopy(self.get_model(f"{model}sSchema")._model_spec)
-        model_spec.pop("required")
-        model_spec["additionalProperties"] = False
-
-        try:
-            validate_object(self.swagger_spec, model_spec, data)
-        except ValidationError as ex:
-            raise MPContribsClientError(str(ex))
-
-    # Brendan TODO: Translate
     def _is_serializable_dict(self, dct: dict) -> None:
         """Raise an error if an input dict is not JSON serializable."""
         try:
@@ -151,109 +139,6 @@ class AsyncContribsClient(AsyncBaseClient):
             )
         except StopIteration:
             pass
-
-    # Brendan TODO: Translate
-    def _get_per_page_default_max(
-        self, op: helpers.VALID_OPS_T = "query", resource: str = "contributions"
-    ) -> tuple[int, int]:
-        attr = f"{op}{resource.capitalize()}"
-        resource = self.swagger_spec.resources[resource]
-        param_spec = getattr(resource, attr).params["per_page"].param_spec
-        return param_spec["default"], param_spec["maximum"]
-
-    # Brendan TODO: Translate
-    def _get_per_page(
-        self,
-        per_page: int = -1,
-        op: helpers.VALID_OPS_T = "query",
-        resource: str = "contributions",
-    ) -> int:
-        per_page_default, per_page_max = self._get_per_page_default_max(
-            op=op, resource=resource
-        )
-        if per_page < 0:
-            per_page = per_page_default
-        return min(per_page_max, per_page)
-
-    # Brendan TODO: Translate
-    def _split_query(
-        self,
-        query: dict[str, Any],
-        op: helpers.VALID_OPS = helpers.VALID_OPS.QUERY,
-        resource: VALID_RESOURCES = VALID_RESOURCES.CONTRIBUTIONS,
-        pages: int = -1,
-    ) -> list[dict]:
-        """Avoid URI too long errors."""
-        pp_default, pp_max = self._get_per_page_default_max(op=op, resource=resource)
-        per_page = pp_default if any(k.endswith("__in") for k in query) else pp_max
-        nr_params_to_split = sum(
-            len(v) > per_page for v in query.values() if isinstance(v, list)
-        )
-        if nr_params_to_split > 1:
-            raise MPContribsClientError(
-                f"More than one list in query with length > {per_page} not supported!"
-            )
-
-        queries: list[dict[str, Any]] = []
-
-        for k, v in query.items():
-            if isinstance(v, list):
-                line_len = len(",".join(v).encode("utf-8"))
-
-                while line_len > 3800:
-                    per_page = int(0.8 * per_page)
-                    vv = v[:per_page]
-                    line_len = len(",".join(vv).encode("utf-8"))
-
-                if len(v) > per_page:
-                    for chunk in helpers.grouper(per_page, v):
-                        queries.append({k: list(chunk)})
-
-        query["per_page"] = per_page
-
-        if not queries:
-            queries = [query]
-
-        if len(queries) == 1 and pages and pages > 0:
-            queries = []
-            for page in range(1, pages + 1):
-                queries.append(deepcopy(query))
-                queries[-1]["page"] = page
-
-        for q in queries:
-            # copy over missing parameters
-            q.update({k: v for k, v in query.items() if k not in q})
-
-            # comma-separated lists
-            q.update({k: ",".join(v) for k, v in q.items() if isinstance(v, list)})
-
-        return queries
-
-    # Brendan TODO: Translate
-    def _get_future(
-        self,
-        track_id,
-        params: dict,
-        rel_url: str = "contributions",
-        op: helpers.VALID_OPS_T = "query",
-        data: dict | None = None,
-    ):
-        rname = rel_url.split("/", 1)[0]
-        resource = self.swagger_spec.resources[rname]
-        attr = f"{op}{rname.capitalize()}"
-        method = getattr(resource, attr).http_method
-        kwargs: dict[str, Any] = {
-            "headers": self.headers,
-            "params": params,
-            "hooks": {"response": helpers._response_hook},
-        }
-
-        if method == "put" and data:
-            kwargs["data"] = orjson.dumps(data)
-
-        future = getattr(self.session, method)(f"{self.url}/{rel_url}/", **kwargs)
-        future.track_id = track_id
-        return future
 
     # Brendan TODO: Translate
     def available_query_params(
@@ -284,9 +169,6 @@ class AsyncContribsClient(AsyncBaseClient):
             name (str): name of the project
             fields (list): list of fields to include in response
         """
-        name = self.projects._get_name(name)
-
-        fields = fields or ["_all"]  # retrieve all fields by default
         proj = await self.projects.get_project_by_name(name=name, fields=fields)
 
         return proj

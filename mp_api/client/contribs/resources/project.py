@@ -18,8 +18,10 @@ from mp_api.client.core.schemas import _DictLikeAccess
 
 
 class AsyncProjectProtocol(Protocol):
+    name: str | None
+
     async def get_project_by_name(
-        self, name: str, fields: list[Any] | None
+        self, name: str | None, fields: list[Any] | None
     ) -> ContribsProject: ...
 
     async def query(
@@ -65,6 +67,7 @@ class AsyncProjectResource(AsyncBaseResource, AsyncProjectProtocol):
         )
         self.name = name
 
+    # Brendan TODO: Is it more idiomatic to prefer the newly supplied name and set self.name = name?
     def _get_name(self, name: str | None) -> str:
         """Reports the name of the project, preferring the name given at construciton."""
         name = self.name or name
@@ -76,10 +79,17 @@ class AsyncProjectResource(AsyncBaseResource, AsyncProjectProtocol):
 
     @format_output
     async def get_project_by_name(
-        self, name: str, fields: list[Any] | None
+        self, name: str | None, fields: list[Any] | None
     ) -> ContribsProject:
+        """Get a project by referencing its name.
+
+        Args:
+            name (str): the name of the project to search. If self.name is not None, prefer to use that over the supplied name
+            fields (list[str] | None): a list of fields to return. If none are supplied return all fields
+        """
+        name = self._get_name(name)
         params: dict[str, str | list[str]] = {}
-        params["_fields"] = ",".join(fields) if fields is not None else ["_all"]
+        params["_fields"] = ",".join(fields) if fields else ["_all"]
         res = await self.get(name, params=params)
         return ContribsProject.model_validate(res)
 
