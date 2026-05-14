@@ -506,26 +506,6 @@ class AsyncContribsClient(AsyncBaseClient):
         """
         return await self.projects.get_unique_identifiers_flags(query=query)
 
-    async def _get_contrib_identifier_payloads(
-        self,
-        query: dict[str, Any] | None = None,
-        include: list[str] | None = None,
-        timeout: int = -1,
-        data_id_fields: dict[str, str] | None = None,
-    ) -> tuple[list[dict[str, Any]], set[str], dict[str, str], dict[str, bool]]:
-        (
-            contributions,
-            components,
-            data_id_fields,
-        ) = await self.contributions._get_contrib_identifier_payloads(
-            query=query,
-            include=include,
-            timeout=timeout,
-            data_id_fields=data_id_fields,
-        )
-
-        return contributions, components, data_id_fields, unique_identifiers
-
     def _collect_ids_as_sets(
         self,
         contributions: list[dict[str, Any]],
