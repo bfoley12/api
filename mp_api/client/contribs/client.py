@@ -31,6 +31,10 @@ from mp_api.client.contribs._units import ureg
 from mp_api.client.contribs.base import AsyncBaseClient
 from mp_api.client.contribs.models.project import ContribsProject
 from mp_api.client.contribs.resources.base import VALID_RESOURCES
+from mp_api.client.contribs.resources.contributions import (
+    AsyncContributionsProtocol,
+    AsyncContributionsResource,
+)
 from mp_api.client.contribs.resources.project import (
     AsyncProjectProtocol,
     AsyncProjectResource,
@@ -100,6 +104,11 @@ class AsyncContribsClient(AsyncBaseClient):
             http=self._http,
             use_document_model=self.use_document_model,
             endpoint_slug="projects",
+        )
+        self.contributions: AsyncContributionsProtocol = AsyncContributionsResource(
+            http=self._http,
+            use_document_model=self.use_document_model,
+            endpoint_slug="contributions",
         )
 
     # Brendan TODO: translate to use httpx
@@ -244,9 +253,9 @@ class AsyncContribsClient(AsyncBaseClient):
         """
         await self.projects.remove(name)
 
-    def get_contribution(
+    async def get_contribution(
         self, cid: str, fields: list | None = None
-    ) -> ContribData | dict[str, Any]:  # type: ignore[return-value]
+    ) -> ContribData | dict[str, Any]:
         """Retrieve a contribution.
 
         Args:
@@ -256,23 +265,7 @@ class AsyncContribsClient(AsyncBaseClient):
         Returns:
             ContribData if `use_document_model` and a `MPCDict` otherwise
         """
-        if not fields:
-            fields = list(self.get_model("ContributionsSchema")._properties.keys())
-            fields.remove("needs_build")  # internal field
-
-        contrib = self.contributions.getContributionById(
-            pk=cid, _fields=fields
-        ).result()
-        return (
-            _convert_to_model(  # type: ignore[return-value]
-                [contrib],
-                ContribData,
-                model_name=CONTRIBS_DOC_NAME,
-                requested_fields=fields,
-            )[0]
-            if self.use_document_model
-            else MPCDict(contrib)
-        )
+        return await self.contributions.get_by_id(id=cid, fields=fields)
 
     def get_table(self, tid_or_md5: str) -> Table:
         """Retrieve full Pandas DataFrame for a table.
