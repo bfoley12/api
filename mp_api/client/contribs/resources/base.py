@@ -4,6 +4,7 @@ import asyncio
 import math
 from copy import deepcopy
 from enum import StrEnum
+from functools import cached_property
 from typing import Any
 
 import httpx
@@ -11,6 +12,7 @@ from pydantic import BaseModel, ValidationError
 
 from mp_api.client.contribs import helpers
 from mp_api.client.contribs.pagination import PageMeta
+from mp_api.client.contribs.resources._parameter import _Parameter
 from mp_api.client.contribs.retry import standard_retry, standard_timeout
 from mp_api.client.core.exceptions import MPContribsClientError
 
@@ -41,6 +43,25 @@ class BaseResource:
         self.use_document_model = use_document_model
         self.endpoint_slug: str = endpoint_slug
 
+    @cached_property
+    async def _per_page_table(self) -> dict[str, tuple[int, int]]:
+        """OperationId -> (default, max) for its per_page parameter."""
+        spec = (await self.http.get("openapi.json")).raise_for_status().json()
+        table: dict[str, tuple[int, int]] = {}
+        for path_item in spec.get("paths", {}).values():
+            for method_obj in path_item.values():
+                if not isinstance(method_obj, dict):
+                    continue  # skip "parameters", "summary", etc. at path level
+                op_id = method_obj.get("operationId")
+                if not op_id:
+                    continue
+                for raw in method_obj.get("parameters", []):
+                    param = _Parameter.model_validate(raw)
+                    if param.name == "per_page" and (lim := param.limits()):
+                        table[op_id] = lim
+                        break
+        return table
+
     @standard_timeout(seconds=5)
     @standard_retry
     async def _request(self, method: str, path: str, **kwargs) -> Any:
@@ -63,19 +84,22 @@ class BaseResource:
     async def delete(self, path="", **kwargs) -> Any:
         return await self._request("DELETE", path, **kwargs)
 
-    # Brendan TODO: Translate
-    def _get_per_page_default_max(
+    async def _get_per_page_default_max(
         self,
         op: helpers.VALID_OPS = helpers.VALID_OPS.QUERY,
         resource: VALID_RESOURCES = VALID_RESOURCES.CONTRIBUTIONS,
     ) -> tuple[int, int]:
-        attr = f"{op}{resource.capitalize()}"
-        resource = self.swagger_spec.resources[resource]
-        param_spec = getattr(resource, attr).params["per_page"].param_spec
-        return param_spec["default"], param_spec["maximum"]
+        op_id = f"{op}{resource.capitalize()}"
+        try:
+            return (await self._per_page_table)[op_id]
+        except KeyError:
+            raise MPContribsClientError(
+                f"No per_page limits found for operation {op_id!r}. "
+                f"Either the spec is missing them or the operationId is wrong."
+            )
 
     # Brendan TODO: Old method, can probably modernize
-    def _split_query(
+    async def _split_query(
         self,
         query: dict[str, Any],
         op: helpers.VALID_OPS = helpers.VALID_OPS.QUERY,
@@ -83,7 +107,9 @@ class BaseResource:
         pages: int = -1,
     ) -> list[dict]:
         """Avoid URI too long errors."""
-        pp_default, pp_max = self._get_per_page_default_max(op=op, resource=resource)
+        pp_default, pp_max = await self._get_per_page_default_max(
+            op=op, resource=resource
+        )
         per_page = pp_default if any(k.endswith("__in") for k in query) else pp_max
         nr_params_to_split = sum(
             len(v) > per_page for v in query.values() if isinstance(v, list)
@@ -146,7 +172,7 @@ class BaseResource:
         skip_keys = {"per_page", "_fields", "format", "_sort"}
         query = {k: v for k, v in query.items() if k not in skip_keys}
         query["_fields"] = []  # only need totals -> explicitly request no fields
-        subqueries = self._split_query(query, op=op, resource=resource)
+        subqueries = await self._split_query(query, op=op, resource=resource)
 
         results = await asyncio.gather(*(self._probe(q) for q in subqueries))
         total_count = sum(c for c, _ in results)
