@@ -5,7 +5,7 @@ import math
 from copy import deepcopy
 from enum import StrEnum
 from functools import cached_property
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -20,6 +20,23 @@ from mp_api.client.core.exceptions import MPContribsClientError
 class VALID_RESOURCES(StrEnum):
     PROJECTS = "projects"
     CONTRIBUTIONS = "contributions"
+
+
+class AsyncBaseProtocol(Protocol):
+    async def get(self, path: str | None = None, **kwargs) -> Any: ...
+    async def put(self, path: str | None = None, **kwargs) -> Any: ...
+    async def post(self, path: str | None = None, **kwargs) -> Any: ...
+    async def patch(self, path: str | None = None, **kwargs) -> Any: ...
+    async def delete(self, path: str | None = None, **kwargs) -> Any: ...
+    async def scan(
+        self,
+        query: dict[str, Any] | None = None,
+        resource: VALID_RESOURCES = VALID_RESOURCES.CONTRIBUTIONS,
+        op: helpers.VALID_OPS = helpers.VALID_OPS.QUERY,
+        _timeout: int = -1,
+        *,
+        name: str | None = None,
+    ) -> tuple[int, int]: ...
 
 
 class AsyncBaseResource:
@@ -43,10 +60,15 @@ class AsyncBaseResource:
         self.use_document_model = use_document_model
         self.endpoint_slug: str = endpoint_slug
 
+    # Brendan TODO: Since its a property I can't pass timeout. Set it to default
     @cached_property
-    async def _per_page_table(self) -> dict[str, tuple[int, int]]:
+    async def _per_page_table(self, _timeout: int = 5) -> dict[str, tuple[int, int]]:
         """OperationId -> (default, max) for its per_page parameter."""
-        spec = (await self.http.get("openapi.json")).raise_for_status().json()
+        spec = (
+            (await self.get("openapi.json", _timeout=_timeout))
+            .raise_for_status()
+            .json()
+        )
         table: dict[str, tuple[int, int]] = {}
         for path_item in spec.get("paths", {}).values():
             for method_obj in path_item.values():
@@ -69,25 +91,31 @@ class AsyncBaseResource:
         r.raise_for_status()
         return r.json()
 
-    async def get(self, path="", **kwargs) -> Any:
+    async def get(self, path: str | None = None, **kwargs) -> Any:
+        path = path or self.endpoint_slug
         return await self._request("GET", path, **kwargs)
 
-    async def post(self, path="", **kwargs) -> Any:
+    async def post(self, path: str | None = None, **kwargs) -> Any:
+        path = path or self.endpoint_slug
         return await self._request("POST", path, **kwargs)
 
-    async def put(self, path="", **kwargs) -> Any:
+    async def put(self, path: str | None = None, **kwargs) -> Any:
+        path = path or self.endpoint_slug
         return await self._request("PUT", path, **kwargs)
 
-    async def patch(self, path="", **kwargs) -> Any:
+    async def patch(self, path: str | None = None, **kwargs) -> Any:
+        path = path or self.endpoint_slug
         return await self._request("PATCH", path, **kwargs)
 
-    async def delete(self, path="", **kwargs) -> Any:
+    async def delete(self, path: str | None = None, **kwargs) -> Any:
+        path = path or self.endpoint_slug
         return await self._request("DELETE", path, **kwargs)
 
     async def _get_per_page_default_max(
         self,
         op: helpers.VALID_OPS = helpers.VALID_OPS.QUERY,
         resource: VALID_RESOURCES = VALID_RESOURCES.CONTRIBUTIONS,
+        _timeout: int = -1,
     ) -> tuple[int, int]:
         op_id = f"{op}{resource.capitalize()}"
         try:
@@ -105,10 +133,11 @@ class AsyncBaseResource:
         op: helpers.VALID_OPS = helpers.VALID_OPS.QUERY,
         resource: VALID_RESOURCES = VALID_RESOURCES.CONTRIBUTIONS,
         pages: int = -1,
+        _timeout: int = -1,
     ) -> list[dict]:
         """Avoid URI too long errors."""
         pp_default, pp_max = await self._get_per_page_default_max(
-            op=op, resource=resource
+            op=op, resource=resource, _timeout=_timeout
         )
         per_page = pp_default if any(k.endswith("__in") for k in query) else pp_max
         nr_params_to_split = sum(
@@ -158,8 +187,8 @@ class AsyncBaseResource:
         self,
         query: dict[str, Any] | None = None,
         resource: VALID_RESOURCES = VALID_RESOURCES.CONTRIBUTIONS,
-        _timeout: int = -1,
         op: helpers.VALID_OPS = helpers.VALID_OPS.QUERY,
+        _timeout: int = -1,
         *,
         name: str | None = None,
     ) -> tuple[int, int]:
@@ -174,15 +203,17 @@ class AsyncBaseResource:
         query["_fields"] = []  # only need totals -> explicitly request no fields
         subqueries = await self._split_query(query, op=op, resource=resource)
 
-        results = await asyncio.gather(*(self._probe(q) for q in subqueries))
+        results = await asyncio.gather(
+            *(self._probe(q, _timeout=_timeout) for q in subqueries)
+        )
         total_count = sum(c for c, _ in results)
         total_pages = sum(p for _, p in results)
         return total_count, total_pages
 
-    async def _probe(self, q: dict) -> tuple[int, int]:
+    async def _probe(self, q: dict, _timeout: int = -1) -> tuple[int, int]:
         real_per_page = q["per_page"]
         params = {**q, "per_page": 1, "page": 1}
-        resp = await self.http.get("", params=params)
+        resp = await self.get("", params=params, _timeout=_timeout)
         resp.raise_for_status()
         meta = PageMeta.model_validate(resp.json()["meta"])
         return meta.total_count, math.ceil(meta.total_count / real_per_page)
