@@ -56,6 +56,14 @@ class Contribution(ContribsBase):
             for k in unique_keys
         }
 
+    @property
+    def id_fields(self) -> set[str]:
+        return {k for k in [self.id, self.project, self.identifier] if k}
+
+    @staticmethod
+    def id_keys() -> set[str]:
+        return {"id", "project", "identifier"}
+
     @field_serializer("data", mode="plain")
     def unflatten_data(self, x: dict[str, str | Datum]) -> dict[str, Any]:
         return unflatten_dict(
