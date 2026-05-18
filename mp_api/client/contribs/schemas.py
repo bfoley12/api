@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any, Self, get_args
+from typing import TYPE_CHECKING
 
 import pandas as pd
-from emmet.core.types.typing import DateTimeType
-from pydantic import BaseModel, Field, create_model, field_serializer, field_validator
-from pymatgen.core import Structure
+from pydantic import BaseModel, Field, create_model
 
-from mp_api.client.contribs.utils import flatten_dict, unflatten_dict
 from mp_api.client.core.schemas import _DictLikeAccess
 
 if TYPE_CHECKING:
