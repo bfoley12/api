@@ -6,13 +6,11 @@ import gzip
 import time
 from collections import defaultdict
 from copy import deepcopy
-from math import isclose
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast, overload
 
 import httpx
 import orjson
-from pint.errors import DimensionalityError
 from pymatgen.core import Structure as PmgStructure
 from tqdm.auto import tqdm
 
@@ -26,8 +24,8 @@ from mp_api.client.contribs._types import (
     Table,
     _Component,
 )
-from mp_api.client.contribs._units import ureg
 from mp_api.client.contribs.base import AsyncBaseClient
+from mp_api.client.contribs.models.contributions import Contribution
 from mp_api.client.contribs.models.project import ContribsProject
 from mp_api.client.contribs.resources.base import VALID_RESOURCES
 from mp_api.client.contribs.resources.contributions import (
@@ -40,7 +38,6 @@ from mp_api.client.contribs.resources.project import (
 )
 from mp_api.client.contribs.schemas import (
     CONTRIBS_DOC_NAME,
-    ContribData,
     QueryResult,
 )
 from mp_api.client.contribs.settings import MPCC_SETTINGS
@@ -124,7 +121,7 @@ class AsyncContribsClient(AsyncBaseClient):
 
     # Brendan TODO: Translate
     def __dir__(self) -> set[str]:
-        members = set(self.swagger_spec.resources.keys())
+        members = set(self.cached_swagger_spec.resources.keys())
         members |= {k for k in self.__dict__ if not k.startswith("_")}
         members |= {k for k in dir(self.__class__) if not k.startswith("_")}
         return members
@@ -154,7 +151,7 @@ class AsyncContribsClient(AsyncBaseClient):
         startswith: tuple | None = None,
         resource: str = "contributions",
     ) -> list:
-        resources = self.swagger_spec.resources
+        resources = self.cached_swagger_spec.resources
         resource_obj = resources.get(resource)
         if not resource_obj:
             available_resources = list(resources.keys())
@@ -254,7 +251,7 @@ class AsyncContribsClient(AsyncBaseClient):
 
     async def get_contribution(
         self, cid: str, fields: list | None = None
-    ) -> ContribData | dict[str, Any]:
+    ) -> Contribution | dict[str, Any]:
         """Retrieve a contribution.
 
         Args:
@@ -307,6 +304,139 @@ class AsyncContribsClient(AsyncBaseClient):
         #         f"There were errors and {left} contributions are left to delete!"
         #     )
 
+    def query_contributions(
+        self,
+        query: dict | None = None,
+        fields: list | None = None,
+        sort: str | None = None,
+        paginate: bool = False,
+        timeout: int = -1,
+    ) -> dict[str, Any] | QueryResult:
+        """Query contributions.
+
+        See `client.available_query_params()` for keyword arguments used in query.
+
+        Args:
+            query (dict): optional query to select contributions
+            fields (list): list of fields to include in response
+            sort (str): field to sort by; prepend +/- for asc/desc order
+            paginate (bool): paginate through all results
+            timeout (int): cancel remaining requests if timeout exceeded (in seconds)
+
+        Returns:
+            List of contributions
+        """
+        query = query or {}
+
+        if self.project and "project" not in query:
+            query["project"] = self.project
+
+        if paginate:
+            cids: list[str] = []
+            for values in self.get_all_ids(query).values():
+                cids.extend(self._project_contrib_ids(values))
+
+            if not cids:
+                raise MPContribsClientError("No contributions match the query.")
+
+            total = len(cids)
+            cids_query = {"id__in": cids, "_fields": fields, "_sort": sort}
+            _, total_pages = self.get_totals(query=cids_query)
+            queries = self._split_query(cids_query, pages=total_pages)
+            futures = [self._get_future(i, q) for i, q in enumerate(queries)]
+            responses = helpers._run_futures(futures, total=total, timeout=timeout)
+            ret: dict[str, int | list[str]] = {"total_count": 0, "data": []}
+
+            for resp in responses.values():
+                result = resp["result"]
+                ret["data"].extend(result["data"])  # type: ignore[union-attr]
+                ret["total_count"] += result["total_count"]  # type: ignore[union-attr]
+        else:
+            ret = self.contributions.queryContributions(
+                _fields=fields, _sort=sort, **query
+            ).result()
+
+        if len(ret["data"]) > 0 and self.use_document_model:  # type: ignore[arg-type]
+            ret["data"] = [ContribData(**doc) for doc in ret["data"]]  # type: ignore[arg-type,misc,union-attr]
+
+        return (
+            _convert_to_model(  # type: ignore[return-value]
+                [ret], QueryResult, model_name=CONTRIBS_DOC_NAME
+            )[0]
+            if self.use_document_model
+            else ret
+        )
+
+    def update_contributions(
+        self, data: dict, query: dict | None = None, timeout: int = -1
+    ) -> dict:
+        """Apply the same update to all contributions in a project (matching query).
+
+        See `client.available_query_params()` for keyword arguments used in query.
+
+        Args:
+            data (dict): update to apply on every matching contribution
+            query (dict): optional query to select contributions
+            timeout (int): cancel remaining requests if timeout exceeded (in seconds)
+        """
+        if not data:
+            raise MPContribsClientError("Nothing to update.")
+
+        tic = time.perf_counter()
+        self._is_valid_payload("Contribution", data)
+
+        if "data" in data:
+            self._is_serializable_dict(data["data"])
+
+        query = query or {}
+
+        if self.project:
+            if "project" in query and self.project != query["project"]:
+                raise MPContribsClientError(
+                    f"client initialized with different project {self.project}!"
+                )
+            query["project"] = self.project
+        else:
+            if not query or "project" not in query:
+                raise MPContribsClientError(
+                    "initialize client with project, or include project in query!"
+                )
+
+        name = query["project"]
+        project_ids = self.get_all_ids(query).get(name)
+        cids = list(self._project_contrib_ids(project_ids))
+
+        if not cids:
+            raise MPContribsClientError(
+                f"There aren't any contributions to update for {name}"
+            )
+
+        # get current list of data columns to decide if swagger reload is needed
+        resp = self.projects.getProjectByName(pk=name, _fields=["columns"]).result()
+        old_paths = {c["path"] for c in resp["columns"]}
+
+        total = len(cids)
+        cids_query = {"id__in": cids}
+        _, total_pages = self.get_totals(query=cids_query)
+        queries = self._split_query(cids_query, op="update", pages=total_pages)
+        futures = [
+            self._get_future(i, q, op="update", data=data)
+            for i, q in enumerate(queries)
+        ]
+        responses = helpers._run_futures(futures, total=total, timeout=timeout)
+        updated = sum(resp["count"] for _, resp in responses.items())
+
+        if updated:
+            resp = self.projects.getProjectByName(pk=name, _fields=["columns"]).result()
+            new_paths = {c["path"] for c in resp["columns"]}
+
+            if new_paths != old_paths:
+                self.init_columns(name=name)
+                self._reinit()
+
+        toc = time.perf_counter()
+        return {"updated": updated, "total": total, "seconds_elapsed": toc - tic}
+
     def get_table(self, tid_or_md5: str) -> Table:
         """Retrieve full Pandas DataFrame for a table.
 
@@ -327,7 +457,7 @@ class AsyncContribsClient(AsyncBaseClient):
         else:
             tid = tid_or_md5
 
-        op = self.swagger_spec.resources["tables"].queryTables
+        op = self.cached_swagger_spec.resources["tables"].queryTables
         per_page = op.params["data_per_page"].param_spec["maximum"]
         table: dict[str, list[str]] = {"data": []}
         page, pages = 1, None
@@ -729,139 +859,6 @@ class AsyncContribsClient(AsyncBaseClient):
             data_id_fields=clean_data_id_fields,
             unique_identifiers=unique_identifiers,
         )
-
-    def query_contributions(
-        self,
-        query: dict | None = None,
-        fields: list | None = None,
-        sort: str | None = None,
-        paginate: bool = False,
-        timeout: int = -1,
-    ) -> dict[str, Any] | QueryResult:
-        """Query contributions.
-
-        See `client.available_query_params()` for keyword arguments used in query.
-
-        Args:
-            query (dict): optional query to select contributions
-            fields (list): list of fields to include in response
-            sort (str): field to sort by; prepend +/- for asc/desc order
-            paginate (bool): paginate through all results
-            timeout (int): cancel remaining requests if timeout exceeded (in seconds)
-
-        Returns:
-            List of contributions
-        """
-        query = query or {}
-
-        if self.project and "project" not in query:
-            query["project"] = self.project
-
-        if paginate:
-            cids: list[str] = []
-            for values in self.get_all_ids(query).values():
-                cids.extend(self._project_contrib_ids(values))
-
-            if not cids:
-                raise MPContribsClientError("No contributions match the query.")
-
-            total = len(cids)
-            cids_query = {"id__in": cids, "_fields": fields, "_sort": sort}
-            _, total_pages = self.get_totals(query=cids_query)
-            queries = self._split_query(cids_query, pages=total_pages)
-            futures = [self._get_future(i, q) for i, q in enumerate(queries)]
-            responses = helpers._run_futures(futures, total=total, timeout=timeout)
-            ret: dict[str, int | list[str]] = {"total_count": 0, "data": []}
-
-            for resp in responses.values():
-                result = resp["result"]
-                ret["data"].extend(result["data"])  # type: ignore[union-attr]
-                ret["total_count"] += result["total_count"]  # type: ignore[union-attr]
-        else:
-            ret = self.contributions.queryContributions(
-                _fields=fields, _sort=sort, **query
-            ).result()
-
-        if len(ret["data"]) > 0 and self.use_document_model:  # type: ignore[arg-type]
-            ret["data"] = [ContribData(**doc) for doc in ret["data"]]  # type: ignore[arg-type,misc,union-attr]
-
-        return (
-            _convert_to_model(  # type: ignore[return-value]
-                [ret], QueryResult, model_name=CONTRIBS_DOC_NAME
-            )[0]
-            if self.use_document_model
-            else ret
-        )
-
-    def update_contributions(
-        self, data: dict, query: dict | None = None, timeout: int = -1
-    ) -> dict:
-        """Apply the same update to all contributions in a project (matching query).
-
-        See `client.available_query_params()` for keyword arguments used in query.
-
-        Args:
-            data (dict): update to apply on every matching contribution
-            query (dict): optional query to select contributions
-            timeout (int): cancel remaining requests if timeout exceeded (in seconds)
-        """
-        if not data:
-            raise MPContribsClientError("Nothing to update.")
-
-        tic = time.perf_counter()
-        self._is_valid_payload("Contribution", data)
-
-        if "data" in data:
-            self._is_serializable_dict(data["data"])
-
-        query = query or {}
-
-        if self.project:
-            if "project" in query and self.project != query["project"]:
-                raise MPContribsClientError(
-                    f"client initialized with different project {self.project}!"
-                )
-            query["project"] = self.project
-        else:
-            if not query or "project" not in query:
-                raise MPContribsClientError(
-                    "initialize client with project, or include project in query!"
-                )
-
-        name = query["project"]
-        project_ids = self.get_all_ids(query).get(name)
-        cids = list(self._project_contrib_ids(project_ids))
-
-        if not cids:
-            raise MPContribsClientError(
-                f"There aren't any contributions to update for {name}"
-            )
-
-        # get current list of data columns to decide if swagger reload is needed
-        resp = self.projects.getProjectByName(pk=name, _fields=["columns"]).result()
-        old_paths = {c["path"] for c in resp["columns"]}
-
-        total = len(cids)
-        cids_query = {"id__in": cids}
-        _, total_pages = self.get_totals(query=cids_query)
-        queries = self._split_query(cids_query, op="update", pages=total_pages)
-        futures = [
-            self._get_future(i, q, op="update", data=data)
-            for i, q in enumerate(queries)
-        ]
-        responses = helpers._run_futures(futures, total=total, timeout=timeout)
-        updated = sum(resp["count"] for _, resp in responses.items())
-
-        if updated:
-            resp = self.projects.getProjectByName(pk=name, _fields=["columns"]).result()
-            new_paths = {c["path"] for c in resp["columns"]}
-
-            if new_paths != old_paths:
-                self.init_columns(name=name)
-                self._reinit()
-
-        toc = time.perf_counter()
-        return {"updated": updated, "total": total, "seconds_elapsed": toc - tic}
 
     def make_public(
         self, query: dict | None = None, recursive: bool = False, timeout: int = -1
