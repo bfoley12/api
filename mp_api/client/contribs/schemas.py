@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 from pydantic import BaseModel, Field, create_model
 
+from mp_api.client.contribs.models.contributions import Contribution
 from mp_api.client.core.schemas import _DictLikeAccess
 
 if TYPE_CHECKING:
@@ -112,7 +113,7 @@ def _get_pydantic_from_dataframe(
     for col in (c for c, v in columns_to_unit.items() if v is None):
         _ = columns_to_unit.pop(col)
 
-    model_fields = {
+    model_fields: dict[str, Any] = {
         columns_renamed[col_name]: (
             _cast_pandas_dtype(
                 df.dtypes[col_name],
@@ -167,5 +168,5 @@ class QueryResult(_DictLikeAccess):
 
     total_count: int
     total_pages: int
-    data: list[ContribData] | None = None
+    data: list[Contribution] | None = None
     has_more: bool = False
