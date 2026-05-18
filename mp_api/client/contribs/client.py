@@ -27,6 +27,7 @@ from mp_api.client.contribs._types import (
 from mp_api.client.contribs.base import AsyncBaseClient
 from mp_api.client.contribs.models.contributions import Contribution
 from mp_api.client.contribs.models.project import ContribsProject
+from mp_api.client.contribs.pagination import Paginator
 from mp_api.client.contribs.resources.base import VALID_RESOURCES
 from mp_api.client.contribs.resources.contributions import (
     AsyncContributionsProtocol,
@@ -36,14 +37,9 @@ from mp_api.client.contribs.resources.project import (
     AsyncProjectProtocol,
     AsyncProjectResource,
 )
-from mp_api.client.contribs.schemas import (
-    CONTRIBS_DOC_NAME,
-    QueryResult,
-)
 from mp_api.client.contribs.settings import MPCC_SETTINGS
 from mp_api.client.contribs.utils import flatten_dict, get_md5, unflatten_dict
 from mp_api.client.core.exceptions import MPContribsClientError
-from mp_api.client.core.schemas import _convert_to_model
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -118,6 +114,14 @@ class AsyncContribsClient(AsyncBaseClient):
             self.projects.name,
             self.version,
         )
+
+    @property
+    def project(self) -> str | None:
+        """Property to get the name of the project associated with the client.
+
+        Maintained for backwards compatability
+        """
+        return self.projects.name
 
     # Brendan TODO: Translate
     def __dir__(self) -> set[str]:
@@ -304,14 +308,14 @@ class AsyncContribsClient(AsyncBaseClient):
         #         f"There were errors and {left} contributions are left to delete!"
         #     )
 
-    def query_contributions(
+    async def query_contributions(
         self,
         query: dict | None = None,
         fields: list | None = None,
         sort: str | None = None,
         paginate: bool = False,
         timeout: int = -1,
-    ) -> dict[str, Any] | QueryResult:
+    ) -> list[Contribution] | Paginator:
         """Query contributions.
 
         See `client.available_query_params()` for keyword arguments used in query.
@@ -328,48 +332,33 @@ class AsyncContribsClient(AsyncBaseClient):
         """
         query = query or {}
 
-        if self.project and "project" not in query:
-            query["project"] = self.project
+        if self.projects.name and "project" not in query:
+            query["project"] = self.projects.name
 
         if paginate:
             cids: list[str] = []
-            for values in self.get_all_ids(query).values():
+            all_ids = await self.get_all_ids(query)
+            for values in all_ids.values():
                 cids.extend(self._project_contrib_ids(values))
 
             if not cids:
                 raise MPContribsClientError("No contributions match the query.")
+            query = {"id__in": cids}
 
-            total = len(cids)
-            cids_query = {"id__in": cids, "_fields": fields, "_sort": sort}
-            _, total_pages = self.get_totals(query=cids_query)
-            queries = self._split_query(cids_query, pages=total_pages)
-            futures = [self._get_future(i, q) for i, q in enumerate(queries)]
-            responses = helpers._run_futures(futures, total=total, timeout=timeout)
-            ret: dict[str, int | list[str]] = {"total_count": 0, "data": []}
-
-            for resp in responses.values():
-                result = resp["result"]
-                ret["data"].extend(result["data"])  # type: ignore[union-attr]
-                ret["total_count"] += result["total_count"]  # type: ignore[union-attr]
-        else:
-            ret = self.contributions.queryContributions(
-                _fields=fields, _sort=sort, **query
-            ).result()
-
-        if len(ret["data"]) > 0 and self.use_document_model:  # type: ignore[arg-type]
-            ret["data"] = [ContribData(**doc) for doc in ret["data"]]  # type: ignore[arg-type,misc,union-attr]
-
-        return (
-            _convert_to_model(  # type: ignore[return-value]
-                [ret], QueryResult, model_name=CONTRIBS_DOC_NAME
-            )[0]
-            if self.use_document_model
-            else ret
+        return await self.contributions.query(
+            query=query,
+            fields=fields,
+            sort=sort,
+            paginate=paginate,
+            _timeout=timeout,
         )
 
-    def update_contributions(
-        self, data: dict, query: dict | None = None, timeout: int = -1
-    ) -> dict:
+    async def update_contributions(
+        self,
+        data: dict[str, Any],
+        query: dict[str, Any] | None = None,
+        timeout: int = -1,
+    ) -> dict[str, Any]:
         """Apply the same update to all contributions in a project (matching query).
 
         See `client.available_query_params()` for keyword arguments used in query.
@@ -382,28 +371,18 @@ class AsyncContribsClient(AsyncBaseClient):
         if not data:
             raise MPContribsClientError("Nothing to update.")
 
-        tic = time.perf_counter()
-        self._is_valid_payload("Contribution", data)
-
         if "data" in data:
             self._is_serializable_dict(data["data"])
 
+        tic = time.perf_counter()
+
         query = query or {}
 
-        if self.project:
-            if "project" in query and self.project != query["project"]:
-                raise MPContribsClientError(
-                    f"client initialized with different project {self.project}!"
-                )
-            query["project"] = self.project
-        else:
-            if not query or "project" not in query:
-                raise MPContribsClientError(
-                    "initialize client with project, or include project in query!"
-                )
+        self.projects.validate_query_project(query=query)
 
+        # Brendan TODO: Right now we are limited to 1 project at a time
         name = query["project"]
-        project_ids = self.get_all_ids(query).get(name)
+        project_ids = (await self.get_all_ids(query))[name]
         cids = list(self._project_contrib_ids(project_ids))
 
         if not cids:
@@ -411,31 +390,28 @@ class AsyncContribsClient(AsyncBaseClient):
                 f"There aren't any contributions to update for {name}"
             )
 
+        total = len(cids)
+
         # get current list of data columns to decide if swagger reload is needed
-        resp = self.projects.getProjectByName(pk=name, _fields=["columns"]).result()
+        resp = await self.projects.get_project_by_name(name=name, fields=["columns"])
         old_paths = {c["path"] for c in resp["columns"]}
 
-        total = len(cids)
-        cids_query = {"id__in": cids}
-        _, total_pages = self.get_totals(query=cids_query)
-        queries = self._split_query(cids_query, op="update", pages=total_pages)
-        futures = [
-            self._get_future(i, q, op="update", data=data)
-            for i, q in enumerate(queries)
-        ]
-        responses = helpers._run_futures(futures, total=total, timeout=timeout)
-        updated = sum(resp["count"] for _, resp in responses.items())
+        num_updated = await self.contributions.update(
+            data=data, query=query, _timeout=timeout
+        )
 
-        if updated:
-            resp = self.projects.getProjectByName(pk=name, _fields=["columns"]).result()
+        if num_updated:
+            resp = await self.projects.get_project_by_name(
+                name=name, fields=["columns"]
+            )
             new_paths = {c["path"] for c in resp["columns"]}
 
             if new_paths != old_paths:
-                self.init_columns(name=name)
+                _ = self.projects.init_columns(name=name)
                 self._reinit()
 
         toc = time.perf_counter()
-        return {"updated": updated, "total": total, "seconds_elapsed": toc - tic}
+        return {"updated": num_updated, "total": total, "seconds_elapsed": toc - tic}
 
     def get_table(self, tid_or_md5: str) -> Table:
         """Retrieve full Pandas DataFrame for a table.

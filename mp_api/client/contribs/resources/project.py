@@ -5,7 +5,6 @@ from typing import Any, cast
 
 import httpx
 from pint.errors import DimensionalityError
-from pydantic import BaseModel
 
 from mp_api.client.contribs import MPCC_SETTINGS, helpers
 from mp_api.client.contribs._logger import MPCC_LOGGER
@@ -64,6 +63,8 @@ class AsyncProjectProtocol(AsyncBaseProtocol):
     async def init_columns(
         self, columns: dict | None = None, name: str | None = None
     ) -> ContribsProject: ...
+
+    def validate_query_project(self, query: dict[str, Any]): ...
 
 
 class AsyncProjectResource(AsyncBaseResource, AsyncProjectProtocol):
@@ -233,7 +234,7 @@ class AsyncProjectResource(AsyncBaseResource, AsyncProjectProtocol):
             required_keys=fields,
             reference=cast(_DictLikeAccess, ContribsProject),
         )
-        self._is_valid_payload(cast(BaseModel, ContribsProject), payload)
+        self._is_valid_payload(ContribsProject, payload)
         resp = await self.put(path=f"{name}", project=payload)
         if not resp.get("count", 0):
             raise MPContribsClientError(resp)
@@ -431,6 +432,19 @@ class AsyncProjectResource(AsyncBaseResource, AsyncProjectProtocol):
                 new_columns.append(new_column)
 
         payload = {"columns": new_columns}
-        self._is_valid_payload(cast(BaseModel, ContribsProject), payload)
+        self._is_valid_payload(ContribsProject, payload)
 
         return await self.update(update=payload, name=name)
+
+    def validate_query_project(self, query: dict[str, Any]):
+        if self.name:
+            if "project" in query and self.name != query["project"]:
+                raise MPContribsClientError(
+                    f"client initialized with different project {self.name}!"
+                )
+            query["project"] = self.name
+        else:
+            if not query or "project" not in query:
+                raise MPContribsClientError(
+                    "initialize client with project, or include project in query!"
+                )

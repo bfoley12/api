@@ -218,7 +218,7 @@ class AsyncBaseResource:
         meta = PageMeta.model_validate(resp.json()["meta"])
         return meta.total_count, math.ceil(meta.total_count / real_per_page)
 
-    def _is_valid_payload(self, model: BaseModel, data: dict[str, Any]) -> None:
+    def _is_valid_payload(self, model: type[BaseModel], data: dict[str, Any]) -> None:
         """Raise an error if a payload is invalid."""
         model_spec = model.model_json_schema()
         model_spec.pop("required")
