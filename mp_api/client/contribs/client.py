@@ -183,7 +183,7 @@ class ContribsClient(BaseClient):
 
         return proj
 
-    async def query_projects(
+    def query_projects(
         self,
         query: dict | None = None,
         term: str | None = None,

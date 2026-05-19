@@ -23,11 +23,11 @@ class VALID_RESOURCES(StrEnum):
 
 
 class BaseProtocol(Protocol):
-    def get(self, path: str | None = None, **kwargs) -> Any: ...
-    def put(self, path: str | None = None, **kwargs) -> Any: ...
-    def post(self, path: str | None = None, **kwargs) -> Any: ...
-    def patch(self, path: str | None = None, **kwargs) -> Any: ...
-    def delete(self, path: str | None = None, **kwargs) -> Any: ...
+    def get(self, path: str = "", **kwargs) -> Any: ...
+    def put(self, path: str = "", **kwargs) -> Any: ...
+    def post(self, path: str = "", **kwargs) -> Any: ...
+    def patch(self, path: str = "", **kwargs) -> Any: ...
+    def delete(self, path: str = "", **kwargs) -> Any: ...
     def scan(
         self,
         query: dict[str, Any] | None = None,
@@ -83,8 +83,11 @@ class BaseResource(BaseProtocol):
     @cached_property
     def _per_page_table(self, _timeout: int = 5) -> dict[str, tuple[int, int]]:
         """OperationId -> (default, max) for its per_page parameter."""
-        spec = (self.get("openapi.json", _timeout=_timeout)).raise_for_status().json()
+        spec = (
+            (self.http.get("apispec.json", timeout=_timeout)).raise_for_status().json()
+        )
         table: dict[str, tuple[int, int]] = {}
+        # Brendan TODO: homogenize how we handle URLs (when to add "/" and str vs URL)
         for path_item in spec.get("paths", {}).values():
             for method_obj in path_item.values():
                 if not isinstance(method_obj, dict):
@@ -103,30 +106,30 @@ class BaseResource(BaseProtocol):
     def url(self) -> httpx.URL:
         return self.http.base_url.join(self.endpoint_slug)
 
-    @standard_timeout(seconds=5)
-    @standard_retry
-    def _request(self, method: str, path: str, **kwargs) -> Any:
-        r = self.http.request(method, f"{self.endpoint_slug}/{path}", **kwargs)
+    # @standard_timeout(seconds=5)
+    # @standard_retry
+    def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
+        r = self.http.request(method, path)
         r.raise_for_status()
-        return r.json()
+        return r
 
-    def get(self, path: str | None = None, **kwargs) -> Any:
-        path = path or self.endpoint_slug
+    def get(self, path: str = "", **kwargs) -> httpx.Response:
+        path = self.endpoint_slug + path
         return self._request("GET", path, **kwargs)
 
-    def post(self, path: str | None = None, **kwargs) -> Any:
+    def post(self, path: str = "", **kwargs) -> httpx.Response:
         path = path or self.endpoint_slug
         return self._request("POST", path, **kwargs)
 
-    def put(self, path: str | None = None, **kwargs) -> Any:
+    def put(self, path: str = "", **kwargs) -> httpx.Response:
         path = path or self.endpoint_slug
         return self._request("PUT", path, **kwargs)
 
-    def patch(self, path: str | None = None, **kwargs) -> Any:
+    def patch(self, path: str = "", **kwargs) -> httpx.Response:
         path = path or self.endpoint_slug
         return self._request("PATCH", path, **kwargs)
 
-    def delete(self, path: str | None = None, **kwargs) -> Any:
+    def delete(self, path: str = "", **kwargs) -> httpx.Response:
         path = path or self.endpoint_slug
         return self._request("DELETE", path, **kwargs)
 
@@ -232,7 +235,9 @@ class BaseResource(BaseProtocol):
         params = {**q, "per_page": 1, "page": 1}
         resp = self.get("", params=params, _timeout=_timeout)
         resp.raise_for_status()
-        meta = PageMeta.model_validate(resp.json()["meta"])
+        resp_dict = resp.json()
+        _ = resp_dict.pop("data")
+        meta = PageMeta.model_validate(resp_dict)
         total_count = meta.total_count if meta.total_count else 0
         return total_count, math.ceil(meta.total_count / real_per_page)
 
@@ -247,33 +252,35 @@ class BaseResource(BaseProtocol):
         except ValidationError as ex:
             raise MPContribsClientError(str(ex))
 
-    async def fetch_all(
+    # Brendan TODO: Paging should be parameterized better, or made into a class?
+    def fetch_all[T: BaseModel](
         self,
         query: dict[str, Any],
+        model: type[T],
         *,
         op: helpers.VALID_OPS = helpers.VALID_OPS.QUERY,
         resource: VALID_RESOURCES = VALID_RESOURCES.CONTRIBUTIONS,
-        max_concurrency: int = 10,
         timeout: int = -1,
-        desc: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[T]:
         """Resolve totals, split the query, fan out, return a flat list of items."""
-        _, total_pages = await self._probe(
-            query, op=op, resource=resource, _timeout=timeout
-        )
+        # Brendan TODO: How much responsibility should this class take vs callers (where does trust/onus lie)
+        if "per_page" not in query:
+            query["per_page"] = 10
+        if not query["_fields"]:
+            query["_fields"] = ["_all"]
+        _, total_pages = self._probe(query, _timeout=timeout)
         queries = self._split_query(query, op=op, resource=resource, pages=total_pages)
 
-        sem = asyncio.Semaphore(max_concurrency)
+        def _one(q: dict[str, Any]) -> list[dict[str, Any]]:
+            r = self.http.get(self.url, params=q)
+            r.raise_for_status()
+            data = r.json().get("data", [])
+            return data if isinstance(data, list) else []
 
-        async def _one(q: dict[str, Any]) -> list[dict[str, Any]]:
-            async with sem:
-                r = self.http.get(f"/{resource}/", params=q)
-                r.raise_for_status()
-                data = r.json().get("data", [])
-                return data if isinstance(data, list) else []
-
-        pages = await asyncio.gather(*(_one(q) for q in queries))
-        return [item for page in pages for item in page]
+        breakpoint()
+        pages = [_one(q) for q in queries]
+        models = [model.model_validate(item) for page in pages for item in page]
+        return models
 
 
 class AsyncBaseResource:

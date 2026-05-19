@@ -140,6 +140,8 @@ class ProjectResource(BaseResource, ProjectProtocol):
             raise MPContribsClientError(
                 "initialize client with project or set `name` argument!"
             )
+        if not name.endswith("/"):
+            name = name + "/"
         return name
 
     @format_output
@@ -179,6 +181,22 @@ class ProjectResource(BaseResource, ProjectProtocol):
         sort: str | None = None,
         _timeout: int = -1,
     ) -> list[ContribsProject]:
+        """Query projects by query and/or term (Atlas Search).
+
+        See `client.available_query_params(resource="projects")` for keyword arguments used in
+        query. Provide `term` to search for a term across all text fields in the project infos.
+
+        Args:
+            query (dict): optional query to select projects
+            term (str): optional term to search text fields in projects
+            fields (list): list of fields to include in response
+            sort (str): field to sort by; prepend +/- for asc/desc order
+            _timeout (int): cancel remaining requests if timeout exceeded (in seconds)
+
+        Returns:
+            List of projects as validated `ContribsProject`s
+                (use_document_model = True) and `dict`s (otherwise).
+        """
         query = query or {}
         # Brendan TODO: Why do we force this if name is given to client? Shouldn't we allow runtime overrides?
         if self.name or "name" in query:
@@ -195,14 +213,14 @@ class ProjectResource(BaseResource, ProjectProtocol):
         query["_sort"] = sort
 
         # Handle pagination
-        contribs_list = paginate(
-            client=self.http,
-            url=str(self.url),
-            item_model=ContribsProject,
-            params=query,
+        project_list = self.fetch_all(
+            query=query,
+            model=ContribsProject,
+            op=helpers.VALID_OPS.QUERY,
+            resource=VALID_RESOURCES.PROJECTS,
         )
-
-        return contribs_list
+        breakpoint()
+        return project_list
 
     def create(
         self,
