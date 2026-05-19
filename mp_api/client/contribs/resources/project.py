@@ -303,11 +303,11 @@ class ProjectResource(BaseResource, ProjectProtocol):
             required_keys=fields,
             reference=cast(_DictLikeAccess, ContribsProject),
         )
-        self._is_valid_payload(ContribsProject, payload)
+        return_value = self._is_valid_payload(ContribsProject, payload)
         resp = self.put(path=f"{name}", project=payload)
         if not resp.get("count", 0):
             raise MPContribsClientError(resp)
-        return resp
+        return return_value
 
     # Named remove to avoid overriding the base.delete method, which is an http request
     def remove(self, name: str | None = None) -> None:
