@@ -93,7 +93,7 @@ class ContributionsResource(BaseResource, ContributionsProtocol):
 
         contrib = self.get(pk=id, _fields=fields)
 
-        return contrib
+        return Contribution.model_validate(contrib)
 
     def create(self):
         pass
@@ -124,13 +124,8 @@ class ContributionsResource(BaseResource, ContributionsProtocol):
             id_fields.update(f"data.{field}" for field in data_id_fields.values())
 
         query["_fields"] = list(id_fields | components)
-        responses = pagination.paginate(
-            client=self.http,
-            url=self.endpoint_slug,
-            item_model=Contribution,
-            params=query,
-            _timeout=_timeout,
-        )
+        # Brendan TODO: model is not really needed here
+        responses = self.fetch_all(query=query, model=Contribution, timeout=_timeout)
 
         contributions: list[dict[str, Any]] = []
         for resp in responses:
@@ -177,21 +172,14 @@ class ContributionsResource(BaseResource, ContributionsProtocol):
         Returns:
             List of contributions
         """
+        # Brendan TODO: Should pagination be optional?
         query = query or {}
-        if paginate:
-            query["_fields"] = fields
-            query["_sort"] = sort
-            return pagination.Paginator(
-                self.http,
-                f"{self.http.base_url}/{self.endpoint_slug}",
-                pagination.Page[Contribution],
-                params=query,
-            )
-        return pagination.paginate(
-            client=self.http,
-            url=self.url,
-            item_model=Contribution,
-            params=query,
+        query["_fields"] = fields
+        query["_sort"] = sort
+        return self.fetch_all(
+            query=query,
+            model=Contribution,
+            timeout=_timeout,
         )
 
     def update(
@@ -248,11 +236,8 @@ class ContributionsResource(BaseResource, ContributionsProtocol):
         query = query or {}
         if "id__in" not in query:
             raise MPContribsClientError(f"no id__in provided in query: {query}")
-        res = pagination.paginate(
-            client=self.http,
-            url=f"{self.http.base_url}/{self.endpoint_slug}",
-            item_model=Contribution,
-            params=query,
+        res = self.fetch_all(
+            query=query, model=Contribution, op=helpers.VALID_OPS.UPDATE
         )
         num_updated = len(res)
 
