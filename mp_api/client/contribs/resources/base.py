@@ -113,25 +113,25 @@ class BaseResource(BaseProtocol):
         r.raise_for_status()
         return r
 
-    def get(self, path: str = "", **kwargs) -> httpx.Response:
+    def get(self, path: str = "", **kwargs) -> dict[str, Any]:
         path = self.endpoint_slug + path
-        return self._request("GET", path, **kwargs)
+        return self._request("GET", path, **kwargs).json()
 
-    def post(self, path: str = "", **kwargs) -> httpx.Response:
+    def post(self, path: str = "", **kwargs) -> dict[str, Any]:
         path = path or self.endpoint_slug
-        return self._request("POST", path, **kwargs)
+        return self._request("POST", path, **kwargs).json()
 
-    def put(self, path: str = "", **kwargs) -> httpx.Response:
+    def put(self, path: str = "", **kwargs) -> dict[str, Any]:
         path = path or self.endpoint_slug
-        return self._request("PUT", path, **kwargs)
+        return self._request("PUT", path, **kwargs).json()
 
-    def patch(self, path: str = "", **kwargs) -> httpx.Response:
+    def patch(self, path: str = "", **kwargs) -> dict[str, Any]:
         path = path or self.endpoint_slug
-        return self._request("PATCH", path, **kwargs)
+        return self._request("PATCH", path, **kwargs).json()
 
-    def delete(self, path: str = "", **kwargs) -> httpx.Response:
+    def delete(self, path: str = "", **kwargs) -> dict[str, Any]:
         path = path or self.endpoint_slug
-        return self._request("DELETE", path, **kwargs)
+        return self._request("DELETE", path, **kwargs).json()
 
     def _get_per_page_default_max(
         self,
@@ -234,21 +234,21 @@ class BaseResource(BaseProtocol):
         real_per_page = q["per_page"]
         params = {**q, "per_page": 1, "page": 1}
         resp = self.get("", params=params, _timeout=_timeout)
-        resp.raise_for_status()
-        resp_dict = resp.json()
-        _ = resp_dict.pop("data")
-        meta = PageMeta.model_validate(resp_dict)
+        _ = resp.pop("data")
+        meta = PageMeta.model_validate(resp)
         total_count = meta.total_count if meta.total_count else 0
         return total_count, math.ceil(meta.total_count / real_per_page)
 
-    def _is_valid_payload(self, model: type[BaseModel], data: dict[str, Any]) -> None:
+    def _is_valid_payload[T: BaseModel](
+        self, model: type[T], data: dict[str, Any]
+    ) -> T:
         """Raise an error if a payload is invalid."""
         model_spec = model.model_json_schema()
         model_spec.pop("required")
         model_spec["additionalProperties"] = False
 
         try:
-            _ = model.model_validate(data, strict=True)
+            return model.model_validate(data, strict=True)
         except ValidationError as ex:
             raise MPContribsClientError(str(ex))
 
