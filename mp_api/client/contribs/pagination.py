@@ -5,22 +5,55 @@ import asyncio
 import math
 from collections.abc import AsyncIterator
 from functools import cache
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 T = TypeVar("T", bound=BaseModel)
 
 
-class Page[T: BaseModel](BaseModel):
-    """Default page envelope."""
+class PageMeta(BaseModel):
+    total_count: int | None = None
+    total_pages: int | None = None
+    per_page: int | None = None
+    page: int | None = None
+    has_more: bool | None = None
 
-    items: list[T]
-    total: int
+
+class Page[T: BaseModel](BaseModel):
+    """Default page envelope: ``{meta: {...}, data: [...]}``."""
+
+    meta: PageMeta
+    data: list[T] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _lift_meta(cls, values):
+        if isinstance(values, dict) and "meta" not in values:
+            values = dict(values)
+            values["meta"] = {
+                "total_count": values.pop("total_count", None),
+                "total_pages": values.pop("total_pages", None),
+                "has_more": values.pop("has_more", None),
+                "per_page": values.pop("per_page", None),
+                "page": values.pop("page", None),
+            }
+        return values
+
+    # Interface expected by Paginator. Kept as properties so the rest of
+    # the class doesn't need to know the envelope shape.
+    @property
+    def items(self) -> list[T]:
+        return self.data
+
+    @property
+    def total(self) -> int:
+        return self.meta.total_count if self.meta.total_count else 0
 
     def page_count(self, per_page: int) -> int:
-        return math.ceil(self.total / per_page) if per_page else 1
+        total_count = self.meta.total_count if self.meta.total_count else 0
+        return math.ceil(total_count / per_page) if per_page else 1
 
 
 @cache
@@ -132,13 +165,15 @@ class Paginator[T: BaseModel]:
         out[self.per_page_param] = self.per_page
         return out
 
-    async def _fetch(self, page: int, params: dict) -> Page[T]:
+    async def _fetch(self, page: int, params: dict) -> list[Page[T]]:
         async with self._sem:
-            r = await self.client.get(
+            resp = await self.client.get(
                 self.url, params=self._build_request_params(params, page)
             )
-            r.raise_for_status()
-            return self.page_model.model_validate(r.json())
+            resp.raise_for_status()
+            return [
+                self.page_model.model_validate(r) for r in resp.json().get("data", {})
+            ]
 
     async def all(self) -> list[T]:
         """Fetch all pages, returning a flat list in param-set + page order."""
@@ -153,7 +188,7 @@ class Paginator[T: BaseModel]:
                 return None
             return max(0.0, deadline - asyncio.get_running_loop().time())
 
-        # Phase 1: first page of each param set (needed for totals).
+        # first page of each param set (needed for totals).
         first_tasks = [
             asyncio.create_task(self._fetch(self.start_page, params))
             for params in self._param_sets
@@ -174,12 +209,13 @@ class Paginator[T: BaseModel]:
                 firsts.append(None)
             else:
                 raise exc
-        # Phase 2: schedule remaining pages for successful firsts.
+        # schedule remaining pages for successful firsts.
         rest_tasks: list[list[asyncio.Task]] = []
         for idx, first in enumerate(firsts):
             if first is None:
                 rest_tasks.append([])
                 continue
+            breakpoint()
             n_pages = math.ceil(first.total / self.per_page) if self.per_page else 1
             params = self._param_sets[idx]
             rest_tasks.append(
@@ -195,7 +231,7 @@ class Paginator[T: BaseModel]:
             for t in pending2:
                 t.cancel()
 
-        # Phase 3: assemble in order.
+        # assemble in order.
         out: list[T] = []
         for idx, first in enumerate(firsts):
             if first is None:

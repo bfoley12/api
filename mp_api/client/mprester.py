@@ -259,7 +259,7 @@ class MPRester:
         """
         if self._contribs is None:
             try:
-                from mp_api.client.contribs.client import ContribsClient
+                from mp_api.client.contribs.async_client import ContribsClient
 
                 self._contribs = ContribsClient(
                     api_key=self.api_key,

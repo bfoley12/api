@@ -61,7 +61,10 @@ class ContribsClientSettings(BaseSettings):
 
     CLIENT_LOG_LEVEL: str = Field("INFO")
 
-    model_config = SettingsConfigDict(env_prefix="MPCONTRIBS_")
+    model_config = SettingsConfigDict(
+        env_prefix="MPCONTRIBS_",
+        env_file=".env",
+    )
 
     @cached_property
     def SUPPORTED_MIMES(self) -> set[str]:

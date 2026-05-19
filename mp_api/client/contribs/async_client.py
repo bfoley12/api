@@ -24,18 +24,18 @@ from mp_api.client.contribs._types import (
     Table,
     _Component,
 )
-from mp_api.client.contribs.base import BaseClient
+from mp_api.client.contribs.base import AsyncBaseClient
 from mp_api.client.contribs.models.contributions import Contribution
 from mp_api.client.contribs.models.project import ContribsProject
 from mp_api.client.contribs.pagination import Paginator
 from mp_api.client.contribs.resources.base import VALID_RESOURCES
 from mp_api.client.contribs.resources.contributions import (
-    ContributionsProtocol,
-    ContributionsResource,
+    AsyncContributionsProtocol,
+    AsyncContributionsResource,
 )
 from mp_api.client.contribs.resources.project import (
-    ProjectProtocol,
-    ProjectResource,
+    AsyncProjectProtocol,
+    AsyncProjectResource,
 )
 from mp_api.client.contribs.settings import MPCC_SETTINGS
 from mp_api.client.contribs.utils import flatten_dict, get_md5, unflatten_dict
@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     )
 
 
-class ContribsClient(BaseClient):
+class AsyncContribsClient(AsyncBaseClient):
     """client to connect to MPContribs API.
 
     Typical usage:
@@ -69,7 +69,7 @@ class ContribsClient(BaseClient):
         headers: dict | None = None,
         host: str | None = None,
         project: str | None = None,
-        http: httpx.Client | None = None,
+        http: httpx.AsyncClient | None = None,
         use_document_model: bool = False,
         **kwargs,
     ) -> None:
@@ -91,13 +91,13 @@ class ContribsClient(BaseClient):
 
         self.use_document_model = use_document_model
 
-        self.projects: ProjectProtocol = ProjectResource(
+        self.projects: AsyncProjectProtocol = AsyncProjectResource(
             name=project,
             http=self._http,
             use_document_model=self.use_document_model,
             endpoint_slug="projects",
         )
-        self.contributions: ContributionsProtocol = ContributionsResource(
+        self.contributions: AsyncContributionsProtocol = AsyncContributionsResource(
             http=self._http,
             use_document_model=self.use_document_model,
             endpoint_slug="contributions",
@@ -169,7 +169,7 @@ class ContribsClient(BaseClient):
 
         return [param for param in params if param.startswith(startswith)]
 
-    def get_project(
+    async def get_project(
         self, name: str | None = None, fields: list | None = None, **kwargs
     ) -> MPCDict | ContribsProject:
         """Retrieve a project entry.
@@ -177,9 +177,10 @@ class ContribsClient(BaseClient):
         Args:
             name (str): name of the project
             fields (list): list of fields to include in response
-            kwargs (dict): allow pass-through of settings
         """
-        proj = self.projects.get_project_by_name(name=name, fields=fields, **kwargs)
+        proj = await self.projects.get_project_by_name(
+            name=name, fields=fields, **kwargs
+        )
 
         return proj
 
@@ -207,12 +208,12 @@ class ContribsClient(BaseClient):
             List of projects as validated `ContribsProject`s
                 (use_document_model = True) and `dict`s (otherwise).
         """
-        resp = self.projects.query(
+        resp = await self.projects.query(
             query=query, term=term, fields=fields, sort=sort, _timeout=timeout
         )
         return resp
 
-    def create_project(
+    async def create_project(
         self,
         name: str,
         title: str,
@@ -229,7 +230,7 @@ class ContribsClient(BaseClient):
             description (str): brief description (max 2000 characters)
             url (str): URL for primary reference (paper/website/...)
         """
-        self.projects.create(
+        await self.projects.create(
             name=name,
             title=title,
             authors=authors,
@@ -237,24 +238,24 @@ class ContribsClient(BaseClient):
             url=url,
         )
 
-    def update_project(self, update: dict, name: str | None = None) -> None:
+    async def update_project(self, update: dict, name: str | None = None) -> None:
         """Update project info.
 
         Args:
             update (dict): dictionary containing project info to update
             name (str): name of the project
         """
-        self.projects.update(update=update, name=name)
+        await self.projects.update(update=update, name=name)
 
-    def delete_project(self, name: str | None = None) -> None:
+    async def delete_project(self, name: str | None = None) -> None:
         """Delete a project.
 
         Args:
             name (str): name of the project
         """
-        self.projects.remove(name)
+        await self.projects.remove(name)
 
-    def get_contribution(
+    async def get_contribution(
         self, cid: str, fields: list | None = None
     ) -> Contribution | dict[str, Any]:
         """Retrieve a contribution.
@@ -266,9 +267,9 @@ class ContribsClient(BaseClient):
         Returns:
             ContribData if `use_document_model` and a `MPCDict` otherwise
         """
-        return self.contributions.get_by_id(id=cid, fields=fields)
+        return await self.contributions.get_by_id(id=cid, fields=fields)
 
-    def delete_contributions(
+    async def delete_contributions(
         self, query: dict | None = None, timeout: int = -1
     ) -> None:
         """Remove all contributions for a query.
@@ -288,14 +289,16 @@ class ContribsClient(BaseClient):
             query["project"] = self.projects.name
 
         name = query["project"]
-        project_ids = list(self.get_all_ids(query, fmt="sets").get(name, {}).keys())
+        project_ids = list(
+            (await self.get_all_ids(query, fmt="sets")).get(name, {}).keys()
+        )
 
         tic = time.perf_counter()
         # Brendan TODO: Confirm atomic deletion
-        num_deleted = self.contributions.remove(
+        num_deleted = await self.contributions.remove(
             project_ids=project_ids, query=query, _timeout=timeout
         )
-        _ = self.projects.init_columns(name=name)
+        _ = await self.projects.init_columns(name=name)
         self._reinit()
         toc = time.perf_counter()
         dt = (toc - tic) / 60
@@ -307,7 +310,7 @@ class ContribsClient(BaseClient):
         #         f"There were errors and {left} contributions are left to delete!"
         #     )
 
-    def query_contributions(
+    async def query_contributions(
         self,
         query: dict | None = None,
         fields: list | None = None,
@@ -336,7 +339,7 @@ class ContribsClient(BaseClient):
 
         if paginate:
             cids: list[str] = []
-            all_ids = self.get_all_ids(query)
+            all_ids = await self.get_all_ids(query)
             for values in all_ids.values():
                 cids.extend(self._project_contrib_ids(values))
 
@@ -344,7 +347,7 @@ class ContribsClient(BaseClient):
                 raise MPContribsClientError("No contributions match the query.")
             query = {"id__in": cids}
 
-        return self.contributions.query(
+        return await self.contributions.query(
             query=query,
             fields=fields,
             sort=sort,
@@ -352,7 +355,7 @@ class ContribsClient(BaseClient):
             _timeout=timeout,
         )
 
-    def update_contributions(
+    async def update_contributions(
         self,
         data: dict[str, Any],
         query: dict[str, Any] | None = None,
@@ -381,7 +384,7 @@ class ContribsClient(BaseClient):
 
         # Brendan TODO: Right now we are limited to 1 project at a time
         name = query["project"]
-        project_ids = self.get_all_ids(query)[name]
+        project_ids = (await self.get_all_ids(query))[name]
         cids = list(self._project_contrib_ids(project_ids))
 
         if not cids:
@@ -392,15 +395,17 @@ class ContribsClient(BaseClient):
         total = len(cids)
 
         # get current list of data columns to decide if swagger reload is needed
-        resp = self.projects.get_project_by_name(name=name, fields=["columns"])
+        resp = await self.projects.get_project_by_name(name=name, fields=["columns"])
         old_paths = {c["path"] for c in resp["columns"]}
 
-        num_updated = self.contributions.update(
+        num_updated = await self.contributions.update(
             data=data, query=query, _timeout=timeout
         )
 
         if num_updated:
-            resp = self.projects.get_project_by_name(name=name, fields=["columns"])
+            resp = await self.projects.get_project_by_name(
+                name=name, fields=["columns"]
+            )
             new_paths = {c["path"] for c in resp["columns"]}
 
             if new_paths != old_paths:
@@ -508,7 +513,7 @@ class ContribsClient(BaseClient):
             self.attachments.getAttachmentById(pk=aid, _fields=["_all"]).result()
         )
 
-    def init_columns(
+    async def init_columns(
         self, columns: dict | None = None, name: str | None = None
     ) -> dict:
         """Initialize columns for a project to set their order and desired units.
@@ -547,20 +552,22 @@ class ContribsClient(BaseClient):
         Returns:
             dict containing metadata about the column updates
         """
-        return self.projects.init_columns(columns=columns, name=name).model_dump()
+        return (
+            await self.projects.init_columns(columns=columns, name=name)
+        ).model_dump()
 
-    def scan_projects(
+    async def scan_projects(
         self,
         query: dict[str, Any] | None = None,
         timeout: int = -1,
         op: helpers.VALID_OPS = helpers.VALID_OPS.QUERY,
     ) -> tuple[int, int]:
-        res = self.projects.scan(
+        res = await self.projects.scan(
             query=query, resource=VALID_RESOURCES.PROJECTS, op=op, _timeout=timeout
         )
         return res
 
-    def get_totals(
+    async def get_totals(
         self,
         query: dict | None = None,
         timeout: int = -1,
@@ -580,18 +587,18 @@ class ContribsClient(BaseClient):
             tuple of total counts (int) and pages (int)
         """
         if resource == VALID_RESOURCES.PROJECTS:
-            return self.projects.scan(
+            return await self.projects.scan(
                 query=query, resource=resource, op=op, _timeout=timeout
             )
-        return self.contributions.scan(
+        return await self.contributions.scan(
             query=query, resource=resource, op=op, _timeout=timeout
         )
 
-    def count(self, query: dict | None = None) -> int:
+    async def count(self, query: dict | None = None) -> int:
         """Shortcut for get_totals()."""
-        return self.get_totals(query=query)[0]
+        return (await self.get_totals(query=query))[0]
 
-    def get_unique_identifiers_flags(
+    async def get_unique_identifiers_flags(
         self, query: dict[str, Any] | None = None
     ) -> dict[str, bool]:
         """Retrieve values for `unique_identifiers` flags.
@@ -605,7 +612,7 @@ class ContribsClient(BaseClient):
             dict of str to bool, ex.:
             {"<project-name>": True|False, ...}
         """
-        return self.projects.get_unique_identifiers_flags(query=query)
+        return await self.projects.get_unique_identifiers_flags(query=query)
 
     def _collect_ids_as_sets(
         self,
@@ -733,7 +740,7 @@ class ContribsClient(BaseClient):
         return ids if isinstance(ids, set) else set()
 
     @overload
-    def get_all_ids(
+    async def get_all_ids(
         self,
         query: dict[str, Any] | None = None,
         include: list[str] | None = None,
@@ -743,7 +750,7 @@ class ContribsClient(BaseClient):
     ) -> AllIdSets: ...
 
     @overload
-    def get_all_ids(
+    async def get_all_ids(
         self,
         query: dict[str, Any] | None = None,
         include: list[str] | None = None,
@@ -752,7 +759,7 @@ class ContribsClient(BaseClient):
         fmt: Literal["map"] = "map",
     ) -> AllIdMap: ...
 
-    def get_all_ids(
+    async def get_all_ids(
         self,
         query: dict[str, Any] | None = None,
         include: list[str] | None = None,
@@ -807,12 +814,12 @@ class ContribsClient(BaseClient):
             }, ...}
         """
         q = deepcopy(query or {})  # prevent modifying user query
-        unique_identifiers = self.projects.get_unique_identifiers_flags()
+        unique_identifiers = await self.projects.get_unique_identifiers_flags()
         (
             contributions,
             components,
             clean_data_id_fields,
-        ) = self.contributions._get_contrib_identifier_payloads(
+        ) = await self.contributions._get_contrib_identifier_payloads(
             query=q,
             include=include,
             data_id_fields=data_id_fields,

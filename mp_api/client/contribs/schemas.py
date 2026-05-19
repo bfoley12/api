@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any
 import pandas as pd
 from pydantic import BaseModel, Field, create_model
 
-from mp_api.client.contribs.models.contributions import Contribution
 from mp_api.client.core.schemas import _DictLikeAccess
 
 if TYPE_CHECKING:
@@ -161,12 +160,3 @@ class Datum(_DictLikeAccess):
     def __int__(self) -> int:
         """Allow conversion to int."""
         return int(self.value)
-
-
-class QueryResult(_DictLikeAccess):
-    """Result of query_contributions."""
-
-    total_count: int
-    total_pages: int
-    data: list[Contribution] | None = None
-    has_more: bool = False

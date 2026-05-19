@@ -1,7 +1,11 @@
 import pytest
 
 from unittest.mock import patch, MagicMock
-from mp_api.client.contribs.client import validate_email, ContribsClient, email_format
+from mp_api.client.contribs.client import (
+    validate_email,
+    ContribsClient,
+    email_format,
+)
 from swagger_spec_validator.common import SwaggerValidationError
 
 
