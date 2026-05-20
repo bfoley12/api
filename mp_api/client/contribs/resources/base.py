@@ -277,7 +277,6 @@ class BaseResource(BaseProtocol):
             data = r.json().get("data", [])
             return data if isinstance(data, list) else []
 
-        breakpoint()
         pages = [_one(q) for q in queries]
         models = [model.model_validate(item) for page in pages for item in page]
         return models

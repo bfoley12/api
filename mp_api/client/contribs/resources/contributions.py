@@ -91,7 +91,11 @@ class ContributionsResource(BaseResource, ContributionsProtocol):
             fields = list(Contribution.model_fields.keys())
             fields.remove("needs_build")  # internal field
 
-        contrib = self.get(pk=id, _fields=fields)
+        params = {"_fields": fields}
+        breakpoint()
+        if not id.endswith("/"):
+            id = id + "/"
+        contrib = self.get(path=id, params=params)
 
         return Contribution.model_validate(contrib)
 

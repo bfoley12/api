@@ -219,7 +219,6 @@ class ProjectResource(BaseResource, ProjectProtocol):
             op=helpers.VALID_OPS.QUERY,
             resource=VALID_RESOURCES.PROJECTS,
         )
-        breakpoint()
         return project_list
 
     def create(
