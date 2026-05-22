@@ -28,5 +28,6 @@ Md5Hash = Annotated[str, AfterValidator(_validate_md5)]
 
 
 class ContributionsSupplemental(_DictLikeAccess):
+    id: str
     name: str
     md5: Md5Hash

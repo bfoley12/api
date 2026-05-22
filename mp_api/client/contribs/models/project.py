@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import Any, TypedDict
 
 from pydantic import Field, field_serializer, field_validator
 
@@ -18,27 +18,55 @@ class License(StrEnum):
     CCPD = "CCPD"
 
 
+class ContribsProjectFields(TypedDict):
+    """Define fields for MP Contribs Project.
+
+    This gives IDE hints when unpacked in a method's kwargs in Python >=3.12.
+
+    Examples:
+        from typing import Unpack
+        def create_project(self, **kwargs: Unpack[ContribsProjectFields]) -> ...
+    """
+
+    name: str
+    title: str
+    authors: str
+    description: str
+    references: list[Reference]
+    stats: Stats
+
+    columns: list[Column]
+    long_title: str
+    is_public: bool
+    is_approved: bool
+    unique_identifiers: bool
+    license: License
+    owner: str
+    other: dict[str, Any]
+
+
 class ContribsProject(ContribsBase):
     """Define schema for MP Contribs Project."""
 
     name: str | None = None
     title: str | None = None
-    authors: str | None = None
-    description: str | None = None
-    references: list[Reference] | None = None
+    owner: str | None = None
+    references: list[Reference] = []
+
+    authors: str = ""
+    description: str = ""
     stats: Stats = Field(default_factory=Stats)
 
-    columns: list[Column] = []
     long_title: str | None = None
+    columns: list[Column] = []
     is_public: bool = False
     is_approved: bool = False
     unique_identifiers: bool = True
     license: License = License.CCA4
-    owner: str | None = None
-    other: dict[str, Any] | None = None
+    other: dict[str, Any] = {}
 
     @field_validator("other", mode="before")
-    def flatten_other(cls, d: dict) -> dict[str, str | None]:
+    def flatten_other(cls, d: dict[str, Any]) -> dict[str, str | None]:
         """Flatten column metadata."""
         if all(isinstance(v, str) for v in d.values()):
             return d
