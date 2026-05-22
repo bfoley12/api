@@ -1310,7 +1310,6 @@ class ContribsClient(BaseClient):
             data_id_fields=data_id_fields,
             _timeout=timeout,
         )
-        breakpoint()
         if fmt == "sets":
             return self._collect_ids_as_sets(
                 contributions=contributions,

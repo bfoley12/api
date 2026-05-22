@@ -27,7 +27,6 @@ class ContributionsProtocol(BaseProtocol):
         query: dict | None = None,
         fields: list | None = None,
         sort: str | None = None,
-        paginate: bool = False,
         _timeout: int = -1,
     ) -> list[Contribution] | pagination.Paginator: ...
     def update(
@@ -149,9 +148,8 @@ class ContributionsResource(BaseResource, ContributionsProtocol):
         query: dict | None = None,
         fields: list | None = None,
         sort: str | None = None,
-        paginate: bool = False,
         _timeout: int = -1,
-    ) -> list[Contribution] | pagination.Paginator:
+    ) -> list[Contribution]:
         """Query contributions.
 
         See `client.available_query_params()` for keyword arguments used in query.
@@ -160,7 +158,6 @@ class ContributionsResource(BaseResource, ContributionsProtocol):
             query (dict): optional query to select contributions
             fields (list): list of fields to include in response
             sort (str): field to sort by; prepend +/- for asc/desc order
-            paginate (bool): paginate through all results
             timeout (int): cancel remaining requests if timeout exceeded (in seconds)
 
         Returns:
@@ -168,13 +165,21 @@ class ContributionsResource(BaseResource, ContributionsProtocol):
         """
         # Brendan TODO: Should pagination be optional?
         query = query or {}
+        if not fields:
+            fields = ["_all"]
         query["_fields"] = fields
-        query["_sort"] = sort
-        return self.fetch_all(
-            query=query,
-            model=Contribution,
+        if sort:
+            query["_sort"] = sort
+        # Brendan TODO: On backend-side: we need to be able to handle orphaned refs
+        # - This came about by having a contrib with 8 table references, but only creating 2 of the tables
+        #     and notebooks not being present
+        # - leads to IndexError: list index out of range from REST API (Flask)
+        # - Might not happen naturally, but we should be defensive
+        contribs = self.get(
+            params=query,
             timeout=_timeout,
         )
+        return [Contribution.model_validate(c) for c in contribs["data"]]
 
     def update(
         self,
