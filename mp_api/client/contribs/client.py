@@ -437,6 +437,21 @@ class ContribsClient(BaseClient):
                 "Please provide list of contributions to submit."
             )
 
+        # Steps to take for each contribution:
+        # If id not in the contribution:
+        # 1. check if contribution exists with the same project, identifier, and formula
+        # - if not, insert normally
+        # - if there is then check if we are allowing duplicates. If so, continue. If not, log warning/throw error
+        # 2. pull out and validate components for submission
+        # - also check for duplicates using md5 hash
+        # - if we allow duplicates, add. If not, warn/throw error
+        # 3. Add contribution reference (using OID) to project
+        # 4. Add component reference (using OID) to contribution
+        # If id is in the contribution:
+        # Check that contribution really exists, log warning/throw error if not
+        # If it exists, update fields
+        # If we are updating components, follow similar logic as above
+
         # get existing contributions
         tic = time.perf_counter()
         project_name_set: set[str] = set()
