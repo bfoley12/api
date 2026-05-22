@@ -33,16 +33,14 @@ class ContributionsProtocol(BaseProtocol):
     def update(
         self, data: dict, query: dict | None = None, _timeout: int = -1
     ) -> int: ...
-    def remove(
-        self, project_ids: list[str], query: dict[str, Any], _timeout: int = -1
-    ) -> int: ...
+    def remove(self, query: dict[str, Any], _timeout: int = -1) -> int: ...
     def _get_contrib_identifier_payloads(
         self,
         query: dict[str, Any] | None = None,
         include: list[str] | None = None,
         data_id_fields: dict[str, str] | None = None,
         _timeout: int = -1,
-    ) -> tuple[list[dict[str, Any]], set[str], dict[str, str]]: ...
+    ) -> tuple[list[Contribution], set[str], dict[str, str]]: ...
 
 
 class AsyncContributionsProtocol(AsyncBaseProtocol):
@@ -91,8 +89,7 @@ class ContributionsResource(BaseResource, ContributionsProtocol):
             fields = list(Contribution.model_fields.keys())
             fields.remove("needs_build")  # internal field
 
-        params = {"_fields": fields}
-        breakpoint()
+        params = {"_fields": ",".join(fields)}
         if not id.endswith("/"):
             id = id + "/"
         contrib = self.get(path=id, params=params)
@@ -108,7 +105,18 @@ class ContributionsResource(BaseResource, ContributionsProtocol):
         include: list[str] | None = None,
         data_id_fields: dict[str, str] | None = None,
         _timeout: int = -1,
-    ) -> tuple[list[dict[str, Any]], set[str], dict[str, str]]:
+    ) -> tuple[list[Contribution], set[str], dict[str, str]]:
+        """Get identifying fields for specified contributions and their components.
+
+        Args:
+            query (dict[str, Any]): a query to the REST API for contributions
+            include (list[str]): the component types to include
+            data_id_fields (dict[str, str]): additional fields to consider as identifying from the data field
+            _timeout (int): time before returning (-1 for no timeout)
+
+        Returns:
+            A tuple of contribution data, the component types searched, and the data)ud
+        """
         include = include or []
         components = {x for x in include if x in MPCC_SETTINGS.COMPONENTS}
         if include and not components:
@@ -120,37 +128,19 @@ class ContributionsResource(BaseResource, ContributionsProtocol):
         data_id_fields = data_id_fields or {}
 
         query = helpers.prune_dict(
-            payload=query, disallowed_keys=["page", "per_page", "_fields"]
+            payload=query, disallowed_keys=["name", "page", "per_page", "_fields"]
         )
-
         id_fields = Contribution.id_keys()
         if data_id_fields:
             id_fields.update(f"data.{field}" for field in data_id_fields.values())
 
         query["_fields"] = list(id_fields | components)
-        # Brendan TODO: model is not really needed here
-        responses = self.fetch_all(query=query, model=Contribution, timeout=_timeout)
-
-        contributions: list[dict[str, Any]] = []
-        for resp in responses:
-            data = resp.get("data", [])
-            if isinstance(data, list):
-                contributions.extend(data)
-
+        contributions = self.fetch_all(
+            query=query, model=Contribution, timeout=_timeout
+        )
         return contributions, components, data_id_fields
 
-    def remove(
-        self, project_ids: list[str], query: dict[str, Any], _timeout: int = -1
-    ) -> int:
-        cids = self.get(params={"project__in": project_ids})
-
-        if not cids:
-            MPCC_LOGGER.info(
-                f"There aren't any contributions to delete for {project_ids}"
-            )
-            return 0
-        query["id__in"] = cids
-
+    def remove(self, query: dict[str, Any], _timeout: int = -1) -> int:
         return self.delete(params=query)["count"]
 
     @format_output
