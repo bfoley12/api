@@ -69,6 +69,7 @@ class BaseResource(BaseProtocol):
 
         Args:
             http (httpx.Client): the client to use within the resource
+            headers (dict[str, Any]): headers for api calls
             use_document_model (bool): whether the class should return Pydantic models (True) or MPCDicts (False)
             endpoint_slug (str): the endpoint we are targeting that all methods build on
                 ie for projects: url/projects/*, where "projects" is the endpoint_slug
@@ -108,8 +109,22 @@ class BaseResource(BaseProtocol):
 
     # @standard_timeout(seconds=5)
     # @standard_retry
-    def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
-        r = self.http.request(method, path)
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+        **kwargs,
+    ) -> httpx.Response:
+        r = self.http.request(
+            method,
+            path,
+            params=params,
+            json=json,
+        )
+        print(r.text)
         r.raise_for_status()
         return r
 
@@ -118,19 +133,19 @@ class BaseResource(BaseProtocol):
         return self._request("GET", path, **kwargs).json()
 
     def post(self, path: str = "", **kwargs) -> dict[str, Any]:
-        path = path or self.endpoint_slug
+        path = self.endpoint_slug + path
         return self._request("POST", path, **kwargs).json()
 
     def put(self, path: str = "", **kwargs) -> dict[str, Any]:
-        path = path or self.endpoint_slug
+        path = self.endpoint_slug + path
         return self._request("PUT", path, **kwargs).json()
 
     def patch(self, path: str = "", **kwargs) -> dict[str, Any]:
-        path = path or self.endpoint_slug
+        path = self.endpoint_slug + path
         return self._request("PATCH", path, **kwargs).json()
 
     def delete(self, path: str = "", **kwargs) -> dict[str, Any]:
-        path = path or self.endpoint_slug
+        path = self.endpoint_slug + path
         return self._request("DELETE", path, **kwargs).json()
 
     def _get_per_page_default_max(
@@ -225,7 +240,7 @@ class BaseResource(BaseProtocol):
         query["_fields"] = []  # only need totals -> explicitly request no fields
         subqueries = self._split_query(query, op=op, resource=resource)
 
-        results = (self._probe(q, _timeout=_timeout) for q in subqueries)
+        results = [self._probe(q, _timeout=_timeout) for q in subqueries]
         total_count = sum(c for c, _ in results)
         total_pages = sum(p for _, p in results)
         return total_count, total_pages
@@ -233,7 +248,7 @@ class BaseResource(BaseProtocol):
     def _probe(self, q: dict, _timeout: int = -1) -> tuple[int, int]:
         real_per_page = q["per_page"]
         params = {**q, "per_page": 1, "page": 1}
-        resp = self.get("", params=params, _timeout=_timeout)
+        resp = self.get(params=params, _timeout=_timeout)
         _ = resp.pop("data")
         meta = PageMeta.model_validate(resp)
         total_count = meta.total_count if meta.total_count else 0
@@ -244,7 +259,8 @@ class BaseResource(BaseProtocol):
     ) -> T:
         """Raise an error if a payload is invalid."""
         model_spec = model.model_json_schema()
-        model_spec.pop("required")
+        if "required" in model_spec:
+            model_spec.pop("required")
         model_spec["additionalProperties"] = False
 
         try:
@@ -262,7 +278,10 @@ class BaseResource(BaseProtocol):
         resource: VALID_RESOURCES = VALID_RESOURCES.CONTRIBUTIONS,
         timeout: int = -1,
     ) -> list[T]:
-        """Resolve totals, split the query, fan out, return a flat list of items."""
+        """Resolve totals, split the query, fan out, return a flat list of items.
+
+        The results are the models with default values in fields that were not provided.
+        """
         # Brendan TODO: How much responsibility should this class take vs callers (where does trust/onus lie)
         if "per_page" not in query:
             query["per_page"] = 10
