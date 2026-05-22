@@ -294,6 +294,7 @@ class ContribsClient(BaseClient):
         sort: str | None = None,
         paginate: bool = False,
         timeout: int = -1,
+        force: bool = True,
     ) -> list[Contribution] | Paginator:
         """Query contributions.
 
@@ -311,8 +312,7 @@ class ContribsClient(BaseClient):
         """
         query = query or {}
 
-        if self.projects.name and "project" not in query:
-            query["project"] = self.projects.name
+        query = self.projects.set_query_project(query, force=force)
 
         if paginate:
             cids: list[str] = []
@@ -328,7 +328,6 @@ class ContribsClient(BaseClient):
             query=query,
             fields=fields,
             sort=sort,
-            paginate=paginate,
             _timeout=timeout,
         )
 
