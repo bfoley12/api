@@ -67,7 +67,7 @@ class BaseClient:
     def __init__(
         self,
         api_key: str | None = MPCC_SETTINGS.API_KEY,
-        headers: dict | None = None,
+        headers: dict[str, Any] | None = None,
         host: str | None = None,
         http: httpx.Client | None = None,
         **kwargs,
@@ -89,8 +89,10 @@ class BaseClient:
         # Brendan TODO: Could go even further and define a Transport class for some (or all) fields. Probably too much indirection though
         self.api_key = api_key
         self.headers = headers or {}
-        self.headers = {"x-api-key": api_key} if api_key else self.headers
+        self.headers["x-api-key"] = api_key if api_key else None
         self.headers["Content-Type"] = "application/json"
+        if http is not None and self.headers:
+            http.headers.update(**self.headers)
         self.headers_json = orjson.dumps(
             {k: self.headers[k] for k in sorted(self.headers)}
         )
@@ -99,18 +101,18 @@ class BaseClient:
             "localhost."
         )
         self.protocol = "https" if ssl else "http"
-        self.url = f"{self.protocol}://{self.host}"
+        if not self.host.startswith("http://") and not self.host.startswith("https://"):
+            self.url = f"{self.protocol}://{self.host}"
 
         if self.url not in MPCC_SETTINGS.VALID_URLS:
             raise MPContribsClientError(
                 f"{self.url} not a valid URL (one of "
                 f"{', '.join(MPCC_SETTINGS.VALID_URLS)})"
             )
-
         self._http = (
             http
             if http is not None
-            else httpx.Client(base_url=self.url, headers=headers)
+            else httpx.Client(base_url=self.url, headers=self.headers)
         )
         self.version = helpers._version(self.url)  # includes healthcheck
 
