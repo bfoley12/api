@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from math import isclose
-from typing import Any, cast
+from typing import Any, Unpack, cast
 
 import httpx
 from pint.errors import DimensionalityError
@@ -9,7 +9,7 @@ from pint.errors import DimensionalityError
 from mp_api.client.contribs import helpers
 from mp_api.client.contribs._logger import MPCC_LOGGER
 from mp_api.client.contribs._units import ureg
-from mp_api.client.contribs.models.project import ContribsProject
+from mp_api.client.contribs.models.project import ContribsProject, ContribsProjectFields
 from mp_api.client.contribs.models.reference import Reference
 from mp_api.client.contribs.models.response import Response
 from mp_api.client.contribs.pagination import paginate
@@ -44,14 +44,7 @@ class ProjectProtocol(BaseProtocol):
         _timeout: int = -1,
     ) -> list[ContribsProject]: ...
 
-    def create(
-        self,
-        name: str,
-        title: str,
-        authors: str,
-        description: str,
-        url: str,
-    ) -> None: ...
+    def create(self, **kwargs: Unpack[ContribsProjectFields]) -> None: ...
 
     def update(
         self, update: dict[str, Any], name: str | None = None
@@ -67,7 +60,9 @@ class ProjectProtocol(BaseProtocol):
         self, columns: dict | None = None, name: str | None = None
     ) -> ContribsProject: ...
 
-    def validate_query_project(self, query: dict[str, Any]): ...
+    def set_query_project(
+        self, query: dict[str, Any], force: bool = False
+    ) -> dict[str, Any]: ...
 
 
 class AsyncProjectProtocol(AsyncBaseProtocol):
@@ -161,6 +156,7 @@ class ProjectResource(BaseResource, ProjectProtocol):
         name = self._get_name(name)
         params: dict[str, str | list[str]] = {}
         params["_fields"] = ",".join(fields) if fields else ["_all"]
+        params["pk"] = name
         res = self.get(name, params=params)
         return ContribsProject.model_validate(res)
 
@@ -221,14 +217,7 @@ class ProjectResource(BaseResource, ProjectProtocol):
         )
         return project_list
 
-    def create(
-        self,
-        name: str,
-        title: str,
-        authors: str,
-        description: str,
-        url: str,
-    ) -> None:
+    def create(self, **kwargs: Unpack[ContribsProjectFields]) -> None:
         """Create a project.
 
         Args:
@@ -238,24 +227,22 @@ class ProjectResource(BaseResource, ProjectProtocol):
             description (str): brief description (max 2000 characters)
             url (str): URL for primary reference (paper/website/...)
         """
-        queries = [{"name": name}, {"title": title}]
+        queries = [{"name": kwargs.get("name")}, {"title": kwargs.get("title")}]
         for query in queries:
-            if self.scan(
+            total_count, total_pages = self.scan(
                 query=query, resource=VALID_RESOURCES.PROJECTS, name=self.name
-            ):
+            )
+            if total_count:
                 raise MPContribsClientError(f"Project with {query} already exists!")
 
-        project = ContribsProject(
-            name=name,
-            title=title,
-            authors=authors,
-            description=description,
-            references=[Reference(label="REF", url=url)],
-        )
-        resp = self.put(url="", project=project.to_draft())
+        project = ContribsProject(**kwargs)
+        resp = self.post(json=project.to_draft())
+        # TODO: When posting, owner was not optional
         owner = resp.get("owner")
         if owner:
-            MPCC_LOGGER.info(f"Project `{name}` created with owner `{owner}`")
+            MPCC_LOGGER.info(
+                f"Project `{kwargs.get('name')}` created with owner `{owner}`"
+            )
         else:
             raise MPContribsClientError(resp.get("error", resp))
 
@@ -300,14 +287,17 @@ class ProjectResource(BaseResource, ProjectProtocol):
         payload = helpers.prune_dict(
             payload=update,
             required_keys=fields,
-            reference=cast(_DictLikeAccess, ContribsProject),
+            reference=project,
         )
-        return_value = self._is_valid_payload(ContribsProject, payload)
-        resp = self.put(path=f"{name}", project=payload)
+        # Merge so _is_valid_payload can construct the object with all required keys
+        merged_payload = {**project.model_dump(), **payload}
+        return_value = self._is_valid_payload(ContribsProject, merged_payload)
+        resp = self.put(path=f"{name}", json=payload)
         if not resp.get("count", 0):
             raise MPContribsClientError(resp)
         return return_value
 
+    # Hangs when deleting - maybe no response on server-side
     # Named remove to avoid overriding the base.delete method, which is an http request
     def remove(self, name: str | None = None) -> None:
         """Delete a project.
@@ -321,7 +311,7 @@ class ProjectResource(BaseResource, ProjectProtocol):
         if not self.scan(query={"name": name}, resource=VALID_RESOURCES.PROJECTS):
             raise MPContribsClientError(f"Project `{name}` doesn't exist!")
 
-        resp = self.delete(pk=name)
+        resp = self.delete(path=name)
         if resp and "error" in resp:
             raise MPContribsClientError(resp["error"])
 
@@ -504,18 +494,36 @@ class ProjectResource(BaseResource, ProjectProtocol):
 
         return self.update(update=payload, name=name)
 
-    def validate_query_project(self, query: dict[str, Any]):
-        if self.name:
-            if "project" in query and self.name != query["project"]:
-                raise MPContribsClientError(
-                    f"client initialized with different project {self.name}!"
-                )
-            query["project"] = self.name
-        else:
-            if not query or "project" not in query:
+    def set_query_project(
+        self, query: dict[str, Any], force: bool = False
+    ) -> dict[str, Any]:
+        """Checks 'query' for 'project' keys (ie. project, project__in) and adds query['project'] if none detected.
+        self.name must be set for automatic addition of query['project'].
+        A query constrained only by project is rejected unless force=True.
+        """
+        project_keys = [k for k in query if k == "project" or k.startswith("project__")]
+
+        if not project_keys:
+            if not self.name:
                 raise MPContribsClientError(
                     "initialize client with project, or include project in query!"
                 )
+            MPCC_LOGGER.info(
+                f"no 'project' included in query. Using client's project name {self.name}"
+            )
+            query["project"] = self.name
+            project_keys = ["project"]
+
+        # If every key is project-scoped, this query would affect *all* contributions
+        # in that project. Require force as a guard against accidental deletion.
+        if not force and len(project_keys) == len(query):
+            raise MPContribsClientError(
+                "This query is constrained only by project and would affect all "
+                "contributions associated with it.\n"
+                "Please set force=True if that was intentional."
+            )
+
+        return query
 
 
 class AsyncProjectResource(AsyncBaseResource, AsyncProjectProtocol):
@@ -639,6 +647,8 @@ class AsyncProjectResource(AsyncBaseResource, AsyncProjectProtocol):
             authors=authors,
             description=description,
             references=[Reference(label="REF", url=url)],
+            # TODO: use owner
+            owner="",
         )
         resp = await self.put(url="", project=project.to_draft())
         owner = resp.get("owner")
