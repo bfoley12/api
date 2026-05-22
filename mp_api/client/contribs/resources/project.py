@@ -60,7 +60,7 @@ class ProjectProtocol(BaseProtocol):
         self, columns: dict | None = None, name: str | None = None
     ) -> ContribsProject: ...
 
-    def set_query_project(
+    def _resolve_project_query(
         self, query: dict[str, Any], force: bool = False
     ) -> dict[str, Any]: ...
 
