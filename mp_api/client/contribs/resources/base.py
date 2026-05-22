@@ -124,7 +124,6 @@ class BaseResource(BaseProtocol):
             params=params,
             json=json,
         )
-        print(r.text)
         r.raise_for_status()
         return r
 
@@ -246,8 +245,8 @@ class BaseResource(BaseProtocol):
         return total_count, total_pages
 
     def _probe(self, q: dict, _timeout: int = -1) -> tuple[int, int]:
-        real_per_page = q["per_page"]
-        params = {**q, "per_page": 1, "page": 1}
+        real_per_page = q["_limit"]
+        params = {**q, "_limit": 1, "page": 1}
         resp = self.get(params=params, _timeout=_timeout)
         _ = resp.pop("data")
         meta = PageMeta.model_validate(resp)
@@ -282,18 +281,21 @@ class BaseResource(BaseProtocol):
 
         The results are the models with default values in fields that were not provided.
         """
-        # Brendan TODO: How much responsibility should this class take vs callers (where does trust/onus lie)
-        if "per_page" not in query:
-            query["per_page"] = 10
+        # Brendan TODO: contributions/?per_page=# does not actually work. Must Use _limit
+        # - Would like to make a Query class based on the endpoint
+        if "per_page" in query:
+            query["_limit"] = query["per_page"]
+        if "per_page" not in query or "_limit" not in query:
+            query["_limit"] = 10
         if not query["_fields"]:
             query["_fields"] = ["_all"]
+
         _, total_pages = self._probe(query, _timeout=timeout)
         queries = self._split_query(query, op=op, resource=resource, pages=total_pages)
 
-        def _one(q: dict[str, Any]) -> list[dict[str, Any]]:
-            r = self.http.get(self.url, params=q)
-            r.raise_for_status()
-            data = r.json().get("data", [])
+        def _one(params: dict[str, Any]) -> list[dict[str, Any]]:
+            r = self.get(params=params)
+            data = r.get("data", [])
             return data if isinstance(data, list) else []
 
         pages = [_one(q) for q in queries]
