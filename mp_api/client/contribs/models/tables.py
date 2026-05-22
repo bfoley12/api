@@ -22,6 +22,15 @@ class Attributes(BaseModel):
     labels: Labels
 
 
+class TableStub(ContributionsSupplemental):
+    """Metadata-only table as embedded in contribution responses (no data)."""
+
+    attrs: Attributes
+    columns: list[str]
+    total_data_rows: int
+    total_data_pages: int = 1
+
+
 class Table(ContributionsSupplemental):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

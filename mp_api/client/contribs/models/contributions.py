@@ -4,12 +4,12 @@ from typing import Any, Self, cast, get_args
 
 import pandas as pd
 from emmet.core.types.typing import DateTimeType
-from pydantic import field_serializer, field_validator
+from pydantic import ValidationError, field_serializer, field_validator, model_validator
 from pymatgen.core import Structure
 
 from mp_api.client.contribs.models.attachments import Attachments
 from mp_api.client.contribs.models.base import ContribsBase
-from mp_api.client.contribs.models.tables import Table
+from mp_api.client.contribs.models.tables import TableStub
 from mp_api.client.contribs.schemas import Datum, _get_pydantic_from_dataframe
 from mp_api.client.contribs.utils import flatten_dict, unflatten_dict
 
@@ -26,7 +26,7 @@ class Contribution(ContribsBase):
     needs_build: bool = True
     data: dict[str, str | bool | Datum | None] = {}
     structures: list[Structure] | None = None
-    tables: list[Table] | None = None
+    tables: list[TableStub] | None = None
     attachments: list[Attachments] | None = None
 
     @field_validator("data", mode="before")
