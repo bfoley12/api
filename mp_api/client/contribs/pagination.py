@@ -215,7 +215,6 @@ class Paginator[T: BaseModel]:
             if first is None:
                 rest_tasks.append([])
                 continue
-            breakpoint()
             n_pages = math.ceil(first.total / self.per_page) if self.per_page else 1
             params = self._param_sets[idx]
             rest_tasks.append(
