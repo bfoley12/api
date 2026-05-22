@@ -357,7 +357,7 @@ class ContribsClient(BaseClient):
 
         query = query or {}
 
-        self.projects.validate_query_project(query=query)
+        self.projects._resolve_project_query(query=query)
 
         # Brendan TODO: Right now we are limited to 1 project at a time
         name = query["project"]

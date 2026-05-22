@@ -89,6 +89,7 @@ class Table(ContributionsSupplemental):
         df = pl.DataFrame(rows, schema=columns, orient="row")
 
         return cls(
+            id=doc["id"],
             name=doc["name"],
             md5=doc["md5"],
             attrs=doc["attrs"],

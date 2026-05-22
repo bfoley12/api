@@ -128,7 +128,7 @@ class ProjectResource(BaseResource, ProjectProtocol):
         self.name = name
 
     # Brendan TODO: Is it more idiomatic to prefer the newly supplied name and set self.name = name?
-    def _get_name(self, name: str | None) -> str:
+    def _resolve_project_name(self, name: str | None) -> str:
         """Reports the name of the project, preferring the name given at construciton."""
         name = self.name or name
         if not name:
@@ -138,6 +138,37 @@ class ProjectResource(BaseResource, ProjectProtocol):
         if not name.endswith("/"):
             name = name + "/"
         return name
+
+    def _resolve_project_query(
+        self, query: dict[str, Any], force: bool = False
+    ) -> dict[str, Any]:
+        """Checks 'query' for 'project' keys (ie. project, project__in) and adds query['project'] if none detected.
+        self.name must be set for automatic addition of query['project'].
+        A query constrained only by project is rejected unless force=True.
+        """
+        project_keys = [k for k in query if k == "project" or k.startswith("project__")]
+
+        if not project_keys:
+            if not self.name:
+                raise MPContribsClientError(
+                    "initialize client with project, or include project in query!"
+                )
+            MPCC_LOGGER.info(
+                f"no 'project' included in query. Using client's project name {self.name}"
+            )
+            query["project"] = self.name
+            project_keys = ["project"]
+
+        # If every key is project-scoped, this query would affect *all* contributions
+        # in that project. Require force as a guard against accidental deletion.
+        if not force and len(project_keys) == len(query):
+            raise MPContribsClientError(
+                "This query is constrained only by project and would affect all "
+                "contributions associated with it.\n"
+                "Please set force=True if that was intentional."
+            )
+
+        return query
 
     @format_output
     def get_project_by_name(
@@ -153,7 +184,7 @@ class ProjectResource(BaseResource, ProjectProtocol):
             fields (list[str] | None): a list of fields to return. If none are supplied return all fields
             kwargs (dict): allows for pass-through of arguments for retry behavior
         """
-        name = self._get_name(name)
+        name = self._resolve_project_name(name)
         params: dict[str, str | list[str]] = {}
         params["_fields"] = ",".join(fields) if fields else ["_all"]
         params["pk"] = name
@@ -259,7 +290,7 @@ class ProjectResource(BaseResource, ProjectProtocol):
             MPCC_LOGGER.warning("nothing to update")
             raise MPContribsClientError("No update dict provided")
 
-        name = self._get_name(name)
+        name = self._resolve_project_name(name)
 
         disallowed = ["stats", "columns"]
         update = helpers.prune_dict(update, disallowed)
@@ -305,7 +336,7 @@ class ProjectResource(BaseResource, ProjectProtocol):
         Args:
             name (str): name of the project
         """
-        name = self._get_name(name)
+        name = self._resolve_project_name(name)
 
         # Brendan TODO: Make a 'require_record' policy?
         if not self.scan(query={"name": name}, resource=VALID_RESOURCES.PROJECTS):
@@ -371,7 +402,7 @@ class ProjectResource(BaseResource, ProjectProtocol):
         Returns:
             dict containing metadata about the column updates
         """
-        name = self._get_name(name)
+        name = self._resolve_project_name(name)
 
         columns = flatten_dict(columns or {})
 
@@ -493,37 +524,6 @@ class ProjectResource(BaseResource, ProjectProtocol):
         self._is_valid_payload(ContribsProject, payload)
 
         return self.update(update=payload, name=name)
-
-    def set_query_project(
-        self, query: dict[str, Any], force: bool = False
-    ) -> dict[str, Any]:
-        """Checks 'query' for 'project' keys (ie. project, project__in) and adds query['project'] if none detected.
-        self.name must be set for automatic addition of query['project'].
-        A query constrained only by project is rejected unless force=True.
-        """
-        project_keys = [k for k in query if k == "project" or k.startswith("project__")]
-
-        if not project_keys:
-            if not self.name:
-                raise MPContribsClientError(
-                    "initialize client with project, or include project in query!"
-                )
-            MPCC_LOGGER.info(
-                f"no 'project' included in query. Using client's project name {self.name}"
-            )
-            query["project"] = self.name
-            project_keys = ["project"]
-
-        # If every key is project-scoped, this query would affect *all* contributions
-        # in that project. Require force as a guard against accidental deletion.
-        if not force and len(project_keys) == len(query):
-            raise MPContribsClientError(
-                "This query is constrained only by project and would affect all "
-                "contributions associated with it.\n"
-                "Please set force=True if that was intentional."
-            )
-
-        return query
 
 
 class AsyncProjectResource(AsyncBaseResource, AsyncProjectProtocol):
