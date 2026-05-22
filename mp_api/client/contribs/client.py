@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import gzip
+import re
 import time
 from collections import defaultdict
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast, overload
+from typing import TYPE_CHECKING, Literal, Unpack, cast, overload
 
 import httpx
 import orjson
@@ -26,7 +27,7 @@ from mp_api.client.contribs._types import (
 )
 from mp_api.client.contribs.base import BaseClient
 from mp_api.client.contribs.models.contributions import Contribution
-from mp_api.client.contribs.models.project import ContribsProject
+from mp_api.client.contribs.models.project import ContribsProject, ContribsProjectFields
 from mp_api.client.contribs.pagination import Paginator
 from mp_api.client.contribs.resources.base import VALID_RESOURCES
 from mp_api.client.contribs.resources.contributions import (
@@ -212,30 +213,13 @@ class ContribsClient(BaseClient):
         )
         return resp
 
-    def create_project(
-        self,
-        name: str,
-        title: str,
-        authors: str,
-        description: str,
-        url: str,
-    ) -> None:
+    def create_project(self, **kwargs: Unpack[ContribsProjectFields]) -> None:
         """Create a project.
 
         Args:
-            name (str): unique name matching `^[a-zA-Z0-9_]{3,31}$`
-            title (str): unique title with 5-30 characters
-            authors (str): comma-separated list of authors
-            description (str): brief description (max 2000 characters)
-            url (str): URL for primary reference (paper/website/...)
+            kwargs: the fields for a ContribsProject
         """
-        self.projects.create(
-            name=name,
-            title=title,
-            authors=authors,
-            description=description,
-            url=url,
-        )
+        self.projects.create(**kwargs)
 
     def update_project(self, update: dict, name: str | None = None) -> None:
         """Update project info.
@@ -269,34 +253,30 @@ class ContribsClient(BaseClient):
         return self.contributions.get_by_id(id=cid, fields=fields)
 
     def delete_contributions(
-        self, query: dict | None = None, timeout: int = -1
+        self,
+        query: dict | None = None,
+        timeout: int = -1,
+        *,
+        force: bool = False,
     ) -> None:
         """Remove all contributions for a query.
 
         Args:
             query (dict): optional query to select contributions
             timeout (int): cancel remaining requests if timeout exceeded (in seconds)
+            force (bool): forces the deletion of all contributions in a project in the case that only a project field (matching regex: project.*) is set
         """
-        if not self.projects.name and (not query or "project" not in query):
-            raise MPContribsClientError(
-                "initialize client with project, or include project in query!"
-            )
-
-        query = query or {}
-
-        if self.projects.name:
-            query["project"] = self.projects.name
-
-        name = query["project"]
-        project_ids = list(self.get_all_ids(query, fmt="sets").get(name, {}).keys())
+        query = (
+            self.projects.set_query_project(query=query, force=force) if query else {}
+        )
 
         tic = time.perf_counter()
         # Brendan TODO: Confirm atomic deletion
-        num_deleted = self.contributions.remove(
-            project_ids=project_ids, query=query, _timeout=timeout
-        )
-        _ = self.projects.init_columns(name=name)
+        num_deleted = self.contributions.remove(query=query, _timeout=timeout)
+        # Brendan TODO: Check that these are necessary after FastAPI migration
+        _ = self.projects.init_columns(name=query["project"])
         self._reinit()
+
         toc = time.perf_counter()
         dt = (toc - tic) / 60
         MPCC_LOGGER.info(f"It took {dt:.1f}min to delete {num_deleted} contributions.")
@@ -409,6 +389,521 @@ class ContribsClient(BaseClient):
 
         toc = time.perf_counter()
         return {"updated": num_updated, "total": total, "seconds_elapsed": toc - tic}
+
+    def submit_contributions(
+        self,
+        contributions: list[dict],
+        ignore_dupes: bool = False,
+        timeout: int = -1,
+        skip_dupe_check: bool = False,
+    ) -> None:
+        """Submit a list of contributions.
+
+        Example for a single contribution dictionary:
+
+        {
+            "project": "sandbox",
+            "identifier": "mp-4",
+            "data": {
+                "a": "3 eV",
+                "b": {"c": "hello", "d": 3}
+            },
+            "structures": [<pymatgen Structure>, ...],
+            "tables": [<pandas DataFrame>, ...],
+            "attachments": [<pathlib.Path>, <mp_api.client.contribs.Attachment>, ...]
+        }
+
+        This function can also be used to update contributions by including the respective
+        contribution `id`s in the above dictionary and only including fields that need
+        updating. Set list entries to `None` for components that are to be left untouched
+        during an update.
+
+        Args:
+            contributions (list): list of contribution dicts to submit
+            ignore_dupes (bool): force duplicate components to be submitted
+            timeout (int): cancel remaining requests if timeout exceeded (in seconds)
+            skip_dupe_check (bool): skip duplicate check for contribution identifiers
+
+        Returns:
+            None
+
+        Raises:
+            MPContribsClientError on malformed submitted data.
+        """
+        if not contributions or not isinstance(contributions, list):
+            raise MPContribsClientError(
+                "Please provide list of contributions to submit."
+            )
+
+        # get existing contributions
+        tic = time.perf_counter()
+        project_name_set: set[str] = set()
+        collect_ids = []
+        require_one_of = {"data"} | set(MPCC_SETTINGS.COMPONENTS)
+
+        # Identifies ids for all contributions, potentially adds project names
+        for idx, c in enumerate(contributions):
+            has_keys = require_one_of & c.keys()
+            if not has_keys:
+                raise MPContribsClientError(
+                    f"Nothing to submit for contribution #{idx}!"
+                )
+            elif not all(c[k] for k in has_keys):
+                for k in has_keys:
+                    if not c[k]:
+                        raise MPContribsClientError(
+                            f"Empty `{k}` for contribution #{idx}!"
+                        )
+            elif "id" in c:
+                collect_ids.append(c["id"])
+            elif "project" in c and "identifier" in c:
+                project_name_set.add(c["project"])
+            elif self.project and "project" not in c and "identifier" in c:
+                project_name_set.add(self.project)
+                contributions[idx]["project"] = self.project
+            else:
+                raise MPContribsClientError(
+                    f"Provide `project` & `identifier`, or `id` for contribution #{idx}!"
+                )
+
+        id2project = {}
+        if collect_ids:
+            # Gets all project keys associated with the given ids
+            resp = self.get_all_ids(dict(id__in=collect_ids), timeout=timeout)
+            project_name_set |= set(resp.keys())
+
+            # Assigns a contribution id its project name
+            id2project.update(
+                {
+                    cid: project_name
+                    for project_name, values in resp.items()
+                    for cid in self._project_contrib_ids(values)
+                }
+            )
+
+        project_names: list[str] = list(project_name_set)
+
+        # Duplication handling
+        if not skip_dupe_check and len(collect_ids) != len(contributions):
+            nproj = len(project_names)
+            # Gets unique identifiers for the projects we want to add to
+            query: dict[str, Any] = (
+                {"name__in": project_names} if nproj > 1 else {"name": project_names[0]}
+            )
+            unique_identifiers: dict[str, bool] = self.get_unique_identifiers_flags(
+                query
+            )
+            # Gets contribution ids from the projects we want to add to
+            query = (
+                {"project__in": project_names}
+                if nproj > 1
+                else {"project": project_names[0]}
+            )
+            existing = self.get_all_ids(
+                query, include=MPCC_SETTINGS.COMPONENTS, timeout=timeout
+            )
+
+        # prepare contributions
+        contribs = defaultdict(list)
+        digests: dict[str, defaultdict[str, set[str]]] = {
+            project_name: defaultdict(set) for project_name in project_names
+        }
+        # Create list of fields to use
+        fields = [
+            comp
+            for comp in self.get_model("ContributionsSchema")._properties
+            if comp not in MPCC_SETTINGS.COMPONENTS
+        ]
+        fields.remove("needs_build")  # internal field
+
+        # Main loop for preparing contribution submissions
+        for contrib in tqdm(contributions, desc="Prepare"):  # type: ignore[call-arg,attr-defined]
+            # Prepare data dict if present (flatten and ensure serializable)
+            if "data" in contrib:
+                contrib["data"] = unflatten_dict(contrib["data"])
+                self._is_serializable_dict(contrib["data"])
+
+            update = "id" in contrib
+            project_name = id2project[contrib["id"]] if update else contrib["project"]
+            # skip this contrib if: no id field, unique_identifiers does not have the project name,
+            # and the identifier doesn't already exist in the associated projects
+            if (
+                not update
+                and unique_identifiers.get(project_name)
+                and contrib["identifier"]
+                in existing.get(project_name, {}).get("identifiers", {})
+            ):
+                continue
+
+            contrib_copy: dict[str, Any] = {}
+            # For each of the valid fields, deep copy and handle dicts
+            for k in fields:
+                if k in contrib:
+                    if isinstance(contrib[k], dict):
+                        flat: dict[str, str | int | float] = {}
+                        for kk, vv in flatten_dict(contrib[k]).items():
+                            if isinstance(vv, bool):
+                                flat[kk] = "Yes" if vv else "No"
+                            elif (isinstance(vv, str) and vv) or isinstance(
+                                vv, (float, int)
+                            ):
+                                flat[kk] = vv
+                        contrib_copy[k] = deepcopy(unflatten_dict(flat))
+                    else:
+                        contrib_copy[k] = deepcopy(contrib[k])
+
+            contribs[project_name].append(contrib_copy)
+
+            # Handle components attached to the submission
+            for component in MPCC_SETTINGS.COMPONENTS:
+                elements = contrib.get(component, [])
+                nelems = len(elements)
+
+                if nelems > MPCC_SETTINGS.MAX_ELEMS:
+                    raise MPContribsClientError(
+                        f"Too many {component} ({nelems} > {MPCC_SETTINGS.MAX_ELEMS})!"
+                    )
+
+                if update and not nelems:
+                    continue  # nothing to update for this component
+
+                contribs[project_name][-1][component] = []
+
+                for element in elements:
+                    if update and element is None:
+                        contribs[project_name][-1][component].append(None)
+                        continue
+
+                    # validate that the current component matches its assigned type
+                    is_structure = isinstance(element, PmgStructure)
+                    is_table = isinstance(element, (pd.DataFrame, Table))
+                    is_attachment = isinstance(element, (str, Path, Attachment))
+                    if component == "structures" and not is_structure:
+                        raise MPContribsClientError(
+                            f"Use pymatgen Structure for {component}!"
+                        )
+                    elif component == "tables" and not is_table:
+                        raise MPContribsClientError(
+                            f"Use pandas DataFrame or mp_api.client.contribs.Table for {component}!"
+                        )
+                    elif component == "attachments" and not is_attachment:
+                        raise MPContribsClientError(
+                            f"Use str, pathlib.Path or mp_api.client.contribs.Attachment for {component}"
+                        )
+
+                    # Handle formatting of component types
+                    if is_structure:
+                        dct = element.as_dict()
+                        del dct["@module"]
+                        del dct["@class"]
+
+                        if not dct.get("charge"):
+                            del dct["charge"]
+
+                        if "properties" in dct:
+                            if dct["properties"]:
+                                MPCC_LOGGER.warning(
+                                    "storing structure properties not supported, yet!"
+                                )
+                            del dct["properties"]
+                    elif is_table:
+                        table = element
+                        if not isinstance(table, Table):
+                            table = Table(element)
+                            table.attrs = element.attrs
+
+                        table._clean()
+                        dct = table.to_dict(orient="split")
+                    elif is_attachment:
+                        if isinstance(element, (str, Path)):
+                            element = Attachment.from_file(element)
+
+                        dct = {k: element[k] for k in ["mime", "content"]}
+                    else:
+                        raise MPContribsClientError("This should never happen")
+
+                    digest = get_md5(dct)
+
+                    # assign proper name
+                    if is_structure:
+                        dct["name"] = getattr(element, "name", "structure")
+                    elif is_table:
+                        dct["name"], dct["attrs"] = table._attrs_as_dict()
+                    elif is_attachment:
+                        dct["name"] = element.name
+
+                    # Determine if component was provided to use multiple times
+                    dupe = bool(
+                        digest in digests[project_name][component]
+                        or digest
+                        in existing.get(project_name, {})
+                        .get(component, {})  # type: ignore[union-attr]
+                        .get("md5s", [])
+                    )
+
+                    if not ignore_dupes and dupe:
+                        # TODO add matching duplicate info to msg
+                        msg = f"Duplicate in {project_name}: {contrib['identifier']} {dct['name']}"
+                        raise MPContribsClientError(msg)
+
+                    digests[project_name][component].add(digest)
+                    contribs[project_name][-1][component].append(dct)
+                # Make sure the this contrib is a valid shape
+                self._is_valid_payload("Contribution", contribs[project_name][-1])
+
+        # submit contributions
+        #
+        if contribs:
+            total, total_processed = 0, 0
+            nmax = 1000  # TODO this should be set dynamically from `bulk_update_limit`
+
+            def post_future(track_id, payload):
+                future = self.session.post(
+                    f"{self.url}/contributions/",
+                    headers=self.headers,
+                    hooks={"response": helpers._response_hook},
+                    data=payload,
+                )
+                future.track_id = track_id
+                return future
+
+            def put_future(pk, payload):
+                future = self.session.put(
+                    f"{self.url}/contributions/{pk}/",
+                    headers=self.headers,
+                    hooks={"response": helpers._response_hook},
+                    data=payload,
+                )
+                future.track_id = pk
+                return future
+
+            # For each project, update or add its associated contributions
+            for project_name in project_names:
+                ncontribs = len(contribs[project_name])
+                total += ncontribs
+                retries = 0
+
+                while contribs[project_name]:
+                    futures: list[Any] = []
+                    post_chunk: list[dict[str, Any]] = []
+                    idx = 0
+
+                    for n, c in enumerate(contribs[project_name]):
+                        if "id" in c:
+                            pk = c.pop("id")
+                            if not c:
+                                MPCC_LOGGER.error(
+                                    f"SKIPPED: update of {project_name}/{pk} empty."
+                                )
+
+                            payload = orjson.dumps(c)
+                            if len(payload) < MPCC_SETTINGS.MAX_PAYLOAD:
+                                futures.append(put_future(pk, payload))
+                            else:
+                                MPCC_LOGGER.error(
+                                    f"SKIPPED: update of {project_name}/{pk} too large."
+                                )
+                        else:
+                            next_post_chunk = post_chunk + [c]
+                            next_payload = orjson.dumps(next_post_chunk)
+                            if (
+                                len(next_post_chunk) > nmax
+                                or len(next_payload) >= MPCC_SETTINGS.MAX_PAYLOAD
+                            ):
+                                if post_chunk:
+                                    payload = orjson.dumps(post_chunk)
+                                    futures.append(post_future(idx, payload))
+                                    post_chunk = []
+                                    idx += 1
+                                else:
+                                    MPCC_LOGGER.error(
+                                        f"SKIPPED: contrib {project_name}/{n} too large."
+                                    )
+                                    continue
+
+                            post_chunk.append(c)
+
+                    if post_chunk and len(futures) < ncontribs:
+                        payload = orjson.dumps(post_chunk)
+                        futures.append(post_future(idx, payload))
+
+                    if not futures:
+                        break  # nothing to do
+
+                    responses = helpers._run_futures(
+                        futures,
+                        total=ncontribs - total_processed,
+                        timeout=timeout,
+                        desc="Submit",
+                    )
+                    processed = sum(r.get("count", 0) for r in responses.values())
+                    total_processed += processed
+
+                    # Handle incomplete updates
+                    if (
+                        total_processed != ncontribs
+                        and retries < MPCC_SETTINGS.RETRIES
+                        and unique_identifiers.get(project_name)
+                    ):
+                        MPCC_LOGGER.info(
+                            f"{total_processed}/{ncontribs} processed -> retrying ..."
+                        )
+                        existing[project_name] = self.get_all_ids(
+                            dict(project=project_name),
+                            include=MPCC_SETTINGS.COMPONENTS,
+                            timeout=timeout,
+                        ).get(project_name, {"identifiers": set()})
+                        unique_identifiers[project_name] = (
+                            self.projects.getProjectByName(
+                                pk=project_name, _fields=["unique_identifiers"]
+                            ).result()["unique_identifiers"]
+                        )
+                        existing_ids: Iterable[str] = existing.get(
+                            project_name, {}
+                        ).get("identifiers", [])
+                        contribs[project_name] = [
+                            c
+                            for c in contribs[project_name]
+                            if c["identifier"] not in existing_ids
+                        ]
+                        retries += 1
+                    else:
+                        contribs[project_name] = []  # abort retrying
+                        if total_processed != ncontribs:
+                            if retries >= MPCC_SETTINGS.RETRIES:
+                                MPCC_LOGGER.error(
+                                    f"{project_name}: Tried {MPCC_SETTINGS.RETRIES} times - abort."
+                                )
+                            elif not unique_identifiers.get(project_name):
+                                MPCC_LOGGER.info(
+                                    f"{project_name}: resubmit failed contributions manually"
+                                )
+                self.init_columns(name=project_name)
+
+            self._reinit()
+            toc = time.perf_counter()
+            dt = (toc - tic) / 60
+            MPCC_LOGGER.info(
+                f"It took {dt:.1f}min to submit {total_processed}/{total} contributions."
+            )
+        else:
+            MPCC_LOGGER.info("Nothing to submit.")
+
+    def download_contributions(
+        self,
+        query: dict | None = None,
+        outdir: str | Path = MPCC_SETTINGS.DEFAULT_DOWNLOAD_DIR,
+        overwrite: bool = False,
+        include: list[str] | None = None,
+        timeout: int = -1,
+    ) -> list:
+        """Download a list of contributions as .json.gz file(s).
+
+        Args:
+            query: query to select contributions
+            outdir: optional output directory
+            overwrite: force re-download
+            include: components to include in downloads
+            timeout: cancel remaining requests if timeout exceeded (in seconds)
+
+        Returns:
+            Number of new downloads written to disk.
+        """
+        start = time.perf_counter()
+        query = query or {}
+        include = include or []
+        outdir = Path(outdir) or Path(".")
+        outdir.mkdir(parents=True, exist_ok=True)
+        components = {x for x in include if x in MPCC_SETTINGS.COMPONENTS}
+        if include and not components:
+            raise MPContribsClientError(
+                f"`include` must be subset of {MPCC_SETTINGS.COMPONENTS}!"
+            )
+
+        all_ids = self.get_all_ids(query, include=list(components), timeout=timeout)
+        fmt = query.get("format", "json")
+        contributions: list[MPCDict] = []
+        components_loaded: defaultdict[
+            str, dict[str, MPCStructure | Table | Attachment]
+        ] = defaultdict(dict)
+
+        elapsed = float(timeout)
+        for name, values in all_ids.items():
+            if elapsed > 0:
+                elapsed -= time.perf_counter() - start
+                if elapsed < 1:
+                    return contributions
+
+                start = time.perf_counter()
+
+            for component in components:
+                if elapsed > 0:
+                    elapsed -= time.perf_counter() - start
+                    if elapsed < 1:
+                        return contributions
+
+                    start = time.perf_counter()
+
+                ids = list(self._project_component_ids(values, component))
+                if not ids:
+                    continue
+
+                paths = self._download_resource(
+                    resource=component,
+                    ids=ids,
+                    fmt=fmt,
+                    outdir=outdir,
+                    overwrite=overwrite,
+                    timeout=timeout,
+                )
+                MPCC_LOGGER.debug(
+                    f"Downloaded {len(ids)} {component} for '{name}' in {len(paths)} file(s)."
+                )
+
+                match component:
+                    case "structures":
+                        component_cls: type[_Component] = MPCStructure
+                    case "tables":
+                        component_cls = Table
+                    case "attachments":
+                        component_cls = Attachment
+
+                for path in paths:
+                    with gzip.open(path, "rb") as f:
+                        for c in orjson.loads(f.read()):
+                            components_loaded[component][c["id"]] = (
+                                component_cls.from_dict(c)
+                            )
+
+            cids = list(self._project_contrib_ids(values))
+            if not cids:
+                continue
+
+            paths = self._download_resource(
+                resource="contributions",
+                ids=cids,
+                fmt=fmt,
+                outdir=outdir,
+                overwrite=overwrite,
+                timeout=timeout,
+            )
+            MPCC_LOGGER.debug(
+                f"Downloaded {len(cids)} contributions for '{name}' in {len(paths)} file(s)."
+            )
+
+            for path in paths:
+                with gzip.open(path, "rb") as f:
+                    for c in orjson.loads(f.read()):
+                        contrib = MPCDict(c)
+                        for component in components_loaded:
+                            contrib[component] = [
+                                components_loaded[component][d["id"]]
+                                for d in contrib.pop(component)
+                            ]
+
+                        contributions.append(contrib)
+
+        return contributions
 
     def get_table(self, tid_or_md5: str) -> Table:
         """Retrieve full Pandas DataFrame for a table.
@@ -609,7 +1104,7 @@ class ContribsClient(BaseClient):
 
     def _collect_ids_as_sets(
         self,
-        contributions: list[dict[str, Any]],
+        contributions: list[Contribution],
         components: set[str],
         data_id_fields: dict[str, str],
     ) -> AllIdSets:
@@ -646,12 +1141,10 @@ class ContribsClient(BaseClient):
                 component_sets = cast(ComponentIdSets, project_sets[component])
 
                 for item in component_items:
-                    if not isinstance(item, dict):
-                        continue
                     for idk in ("id", "md5"):
                         if isinstance(item.get(idk), str):
                             component_sets[f"{idk}s"].add(item[idk])
-
+                ret[project][component] = component_sets
         return ret
 
     def _collect_ids_as_map(
@@ -807,7 +1300,7 @@ class ContribsClient(BaseClient):
             }, ...}
         """
         q = deepcopy(query or {})  # prevent modifying user query
-        unique_identifiers = self.projects.get_unique_identifiers_flags()
+
         (
             contributions,
             components,
@@ -818,12 +1311,15 @@ class ContribsClient(BaseClient):
             data_id_fields=data_id_fields,
             _timeout=timeout,
         )
+        breakpoint()
         if fmt == "sets":
             return self._collect_ids_as_sets(
                 contributions=contributions,
                 components=components,
                 data_id_fields=clean_data_id_fields,
             )
+
+        unique_identifiers = self.projects.get_unique_identifiers_flags(query=query)
         return self._collect_ids_as_map(
             contributions=contributions,
             components=components,
@@ -919,501 +1415,6 @@ class ContribsClient(BaseClient):
             )
 
         return ret
-
-    def submit_contributions(
-        self,
-        contributions: list[dict],
-        ignore_dupes: bool = False,
-        timeout: int = -1,
-        skip_dupe_check: bool = False,
-    ) -> None:
-        """Submit a list of contributions.
-
-        Example for a single contribution dictionary:
-
-        {
-            "project": "sandbox",
-            "identifier": "mp-4",
-            "data": {
-                "a": "3 eV",
-                "b": {"c": "hello", "d": 3}
-            },
-            "structures": [<pymatgen Structure>, ...],
-            "tables": [<pandas DataFrame>, ...],
-            "attachments": [<pathlib.Path>, <mp_api.client.contribs.Attachment>, ...]
-        }
-
-        This function can also be used to update contributions by including the respective
-        contribution `id`s in the above dictionary and only including fields that need
-        updating. Set list entries to `None` for components that are to be left untouched
-        during an update.
-
-        Args:
-            contributions (list): list of contribution dicts to submit
-            ignore_dupes (bool): force duplicate components to be submitted
-            timeout (int): cancel remaining requests if timeout exceeded (in seconds)
-            skip_dupe_check (bool): skip duplicate check for contribution identifiers
-
-        Returns:
-            None
-
-        Raises:
-            MPContribsClientError on malformed submitted data.
-        """
-        if not contributions or not isinstance(contributions, list):
-            raise MPContribsClientError(
-                "Please provide list of contributions to submit."
-            )
-
-        # get existing contributions
-        tic = time.perf_counter()
-        project_name_set: set[str] = set()
-        collect_ids = []
-        require_one_of = {"data"} | set(MPCC_SETTINGS.COMPONENTS)
-
-        for idx, c in enumerate(contributions):
-            has_keys = require_one_of & c.keys()
-            if not has_keys:
-                raise MPContribsClientError(
-                    f"Nothing to submit for contribution #{idx}!"
-                )
-            elif not all(c[k] for k in has_keys):
-                for k in has_keys:
-                    if not c[k]:
-                        raise MPContribsClientError(
-                            f"Empty `{k}` for contribution #{idx}!"
-                        )
-            elif "id" in c:
-                collect_ids.append(c["id"])
-            elif "project" in c and "identifier" in c:
-                project_name_set.add(c["project"])
-            elif self.project and "project" not in c and "identifier" in c:
-                project_name_set.add(self.project)
-                contributions[idx]["project"] = self.project
-            else:
-                raise MPContribsClientError(
-                    f"Provide `project` & `identifier`, or `id` for contribution #{idx}!"
-                )
-
-        id2project = {}
-        if collect_ids:
-            resp = self.get_all_ids(dict(id__in=collect_ids), timeout=timeout)
-            project_name_set |= set(resp.keys())
-
-            id2project.update(
-                {
-                    cid: project_name
-                    for project_name, values in resp.items()
-                    for cid in self._project_contrib_ids(values)
-                }
-            )
-
-        project_names: list[str] = list(project_name_set)
-
-        if not skip_dupe_check and len(collect_ids) != len(contributions):
-            nproj = len(project_names)
-            query: dict[str, Any] = (
-                {"name__in": project_names} if nproj > 1 else {"name": project_names[0]}
-            )
-            unique_identifiers: dict[str, bool] = self.get_unique_identifiers_flags(
-                query
-            )
-            query = (
-                {"project__in": project_names}
-                if nproj > 1
-                else {"project": project_names[0]}
-            )
-            existing = self.get_all_ids(
-                query, include=MPCC_SETTINGS.COMPONENTS, timeout=timeout
-            )
-
-        # prepare contributions
-        contribs = defaultdict(list)
-        digests: dict[str, defaultdict[str, set[str]]] = {
-            project_name: defaultdict(set) for project_name in project_names
-        }
-        fields = [
-            comp
-            for comp in self.get_model("ContributionsSchema")._properties
-            if comp not in MPCC_SETTINGS.COMPONENTS
-        ]
-        fields.remove("needs_build")  # internal field
-
-        for contrib in tqdm(contributions, desc="Prepare"):  # type: ignore[call-arg,attr-defined]
-            if "data" in contrib:
-                contrib["data"] = unflatten_dict(contrib["data"])
-                self._is_serializable_dict(contrib["data"])
-
-            update = "id" in contrib
-            project_name = id2project[contrib["id"]] if update else contrib["project"]
-            if (
-                not update
-                and unique_identifiers.get(project_name)
-                and contrib["identifier"]
-                in existing.get(project_name, {}).get("identifiers", {})
-            ):
-                continue
-
-            contrib_copy: dict[str, Any] = {}
-            for k in fields:
-                if k in contrib:
-                    if isinstance(contrib[k], dict):
-                        flat: dict[str, str | int | float] = {}
-                        for kk, vv in flatten_dict(contrib[k]).items():
-                            if isinstance(vv, bool):
-                                flat[kk] = "Yes" if vv else "No"
-                            elif (isinstance(vv, str) and vv) or isinstance(
-                                vv, (float, int)
-                            ):
-                                flat[kk] = vv
-                        contrib_copy[k] = deepcopy(unflatten_dict(flat))
-                    else:
-                        contrib_copy[k] = deepcopy(contrib[k])
-
-            contribs[project_name].append(contrib_copy)
-
-            for component in MPCC_SETTINGS.COMPONENTS:
-                elements = contrib.get(component, [])
-                nelems = len(elements)
-
-                if nelems > MPCC_SETTINGS.MAX_ELEMS:
-                    raise MPContribsClientError(
-                        f"Too many {component} ({nelems} > {MPCC_SETTINGS.MAX_ELEMS})!"
-                    )
-
-                if update and not nelems:
-                    continue  # nothing to update for this component
-
-                contribs[project_name][-1][component] = []
-
-                for element in elements:
-                    if update and element is None:
-                        contribs[project_name][-1][component].append(None)
-                        continue
-
-                    is_structure = isinstance(element, PmgStructure)
-                    is_table = isinstance(element, (pd.DataFrame, Table))
-                    is_attachment = isinstance(element, (str, Path, Attachment))
-                    if component == "structures" and not is_structure:
-                        raise MPContribsClientError(
-                            f"Use pymatgen Structure for {component}!"
-                        )
-                    elif component == "tables" and not is_table:
-                        raise MPContribsClientError(
-                            f"Use pandas DataFrame or mp_api.client.contribs.Table for {component}!"
-                        )
-                    elif component == "attachments" and not is_attachment:
-                        raise MPContribsClientError(
-                            f"Use str, pathlib.Path or mp_api.client.contribs.Attachment for {component}"
-                        )
-
-                    if is_structure:
-                        dct = element.as_dict()
-                        del dct["@module"]
-                        del dct["@class"]
-
-                        if not dct.get("charge"):
-                            del dct["charge"]
-
-                        if "properties" in dct:
-                            if dct["properties"]:
-                                MPCC_LOGGER.warning(
-                                    "storing structure properties not supported, yet!"
-                                )
-                            del dct["properties"]
-                    elif is_table:
-                        table = element
-                        if not isinstance(table, Table):
-                            table = Table(element)
-                            table.attrs = element.attrs
-
-                        table._clean()
-                        dct = table.to_dict(orient="split")
-                    elif is_attachment:
-                        if isinstance(element, (str, Path)):
-                            element = Attachment.from_file(element)
-
-                        dct = {k: element[k] for k in ["mime", "content"]}
-                    else:
-                        raise MPContribsClientError("This should never happen")
-
-                    digest = get_md5(dct)
-
-                    if is_structure:
-                        dct["name"] = getattr(element, "name", "structure")
-                    elif is_table:
-                        dct["name"], dct["attrs"] = table._attrs_as_dict()
-                    elif is_attachment:
-                        dct["name"] = element.name
-
-                    dupe = bool(
-                        digest in digests[project_name][component]
-                        or digest
-                        in existing.get(project_name, {})
-                        .get(component, {})  # type: ignore[union-attr]
-                        .get("md5s", [])
-                    )
-
-                    if not ignore_dupes and dupe:
-                        # TODO add matching duplicate info to msg
-                        msg = f"Duplicate in {project_name}: {contrib['identifier']} {dct['name']}"
-                        raise MPContribsClientError(msg)
-
-                    digests[project_name][component].add(digest)
-                    contribs[project_name][-1][component].append(dct)
-
-                self._is_valid_payload("Contribution", contribs[project_name][-1])
-
-        # submit contributions
-        if contribs:
-            total, total_processed = 0, 0
-            nmax = 1000  # TODO this should be set dynamically from `bulk_update_limit`
-
-            def post_future(track_id, payload):
-                future = self.session.post(
-                    f"{self.url}/contributions/",
-                    headers=self.headers,
-                    hooks={"response": helpers._response_hook},
-                    data=payload,
-                )
-                future.track_id = track_id
-                return future
-
-            def put_future(pk, payload):
-                future = self.session.put(
-                    f"{self.url}/contributions/{pk}/",
-                    headers=self.headers,
-                    hooks={"response": helpers._response_hook},
-                    data=payload,
-                )
-                future.track_id = pk
-                return future
-
-            for project_name in project_names:
-                ncontribs = len(contribs[project_name])
-                total += ncontribs
-                retries = 0
-
-                while contribs[project_name]:
-                    futures: list[Any] = []
-                    post_chunk: list[dict[str, Any]] = []
-                    idx = 0
-
-                    for n, c in enumerate(contribs[project_name]):
-                        if "id" in c:
-                            pk = c.pop("id")
-                            if not c:
-                                MPCC_LOGGER.error(
-                                    f"SKIPPED: update of {project_name}/{pk} empty."
-                                )
-
-                            payload = orjson.dumps(c)
-                            if len(payload) < MPCC_SETTINGS.MAX_PAYLOAD:
-                                futures.append(put_future(pk, payload))
-                            else:
-                                MPCC_LOGGER.error(
-                                    f"SKIPPED: update of {project_name}/{pk} too large."
-                                )
-                        else:
-                            next_post_chunk = post_chunk + [c]
-                            next_payload = orjson.dumps(next_post_chunk)
-                            if (
-                                len(next_post_chunk) > nmax
-                                or len(next_payload) >= MPCC_SETTINGS.MAX_PAYLOAD
-                            ):
-                                if post_chunk:
-                                    payload = orjson.dumps(post_chunk)
-                                    futures.append(post_future(idx, payload))
-                                    post_chunk = []
-                                    idx += 1
-                                else:
-                                    MPCC_LOGGER.error(
-                                        f"SKIPPED: contrib {project_name}/{n} too large."
-                                    )
-                                    continue
-
-                            post_chunk.append(c)
-
-                    if post_chunk and len(futures) < ncontribs:
-                        payload = orjson.dumps(post_chunk)
-                        futures.append(post_future(idx, payload))
-
-                    if not futures:
-                        break  # nothing to do
-
-                    responses = helpers._run_futures(
-                        futures,
-                        total=ncontribs - total_processed,
-                        timeout=timeout,
-                        desc="Submit",
-                    )
-                    processed = sum(r.get("count", 0) for r in responses.values())
-                    total_processed += processed
-
-                    if (
-                        total_processed != ncontribs
-                        and retries < MPCC_SETTINGS.RETRIES
-                        and unique_identifiers.get(project_name)
-                    ):
-                        MPCC_LOGGER.info(
-                            f"{total_processed}/{ncontribs} processed -> retrying ..."
-                        )
-                        existing[project_name] = self.get_all_ids(
-                            dict(project=project_name),
-                            include=MPCC_SETTINGS.COMPONENTS,
-                            timeout=timeout,
-                        ).get(project_name, {"identifiers": set()})
-                        unique_identifiers[project_name] = (
-                            self.projects.getProjectByName(
-                                pk=project_name, _fields=["unique_identifiers"]
-                            ).result()["unique_identifiers"]
-                        )
-                        existing_ids: Iterable[str] = existing.get(
-                            project_name, {}
-                        ).get("identifiers", [])
-                        contribs[project_name] = [
-                            c
-                            for c in contribs[project_name]
-                            if c["identifier"] not in existing_ids
-                        ]
-                        retries += 1
-                    else:
-                        contribs[project_name] = []  # abort retrying
-                        if total_processed != ncontribs:
-                            if retries >= MPCC_SETTINGS.RETRIES:
-                                MPCC_LOGGER.error(
-                                    f"{project_name}: Tried {MPCC_SETTINGS.RETRIES} times - abort."
-                                )
-                            elif not unique_identifiers.get(project_name):
-                                MPCC_LOGGER.info(
-                                    f"{project_name}: resubmit failed contributions manually"
-                                )
-                self.init_columns(name=project_name)
-
-            self._reinit()
-            toc = time.perf_counter()
-            dt = (toc - tic) / 60
-            MPCC_LOGGER.info(
-                f"It took {dt:.1f}min to submit {total_processed}/{total} contributions."
-            )
-        else:
-            MPCC_LOGGER.info("Nothing to submit.")
-
-    def download_contributions(
-        self,
-        query: dict | None = None,
-        outdir: str | Path = MPCC_SETTINGS.DEFAULT_DOWNLOAD_DIR,
-        overwrite: bool = False,
-        include: list[str] | None = None,
-        timeout: int = -1,
-    ) -> list:
-        """Download a list of contributions as .json.gz file(s).
-
-        Args:
-            query: query to select contributions
-            outdir: optional output directory
-            overwrite: force re-download
-            include: components to include in downloads
-            timeout: cancel remaining requests if timeout exceeded (in seconds)
-
-        Returns:
-            Number of new downloads written to disk.
-        """
-        start = time.perf_counter()
-        query = query or {}
-        include = include or []
-        outdir = Path(outdir) or Path(".")
-        outdir.mkdir(parents=True, exist_ok=True)
-        components = {x for x in include if x in MPCC_SETTINGS.COMPONENTS}
-        if include and not components:
-            raise MPContribsClientError(
-                f"`include` must be subset of {MPCC_SETTINGS.COMPONENTS}!"
-            )
-
-        all_ids = self.get_all_ids(query, include=list(components), timeout=timeout)
-        fmt = query.get("format", "json")
-        contributions: list[MPCDict] = []
-        components_loaded: defaultdict[
-            str, dict[str, MPCStructure | Table | Attachment]
-        ] = defaultdict(dict)
-
-        elapsed = float(timeout)
-        for name, values in all_ids.items():
-            if elapsed > 0:
-                elapsed -= time.perf_counter() - start
-                if elapsed < 1:
-                    return contributions
-
-                start = time.perf_counter()
-
-            for component in components:
-                if elapsed > 0:
-                    elapsed -= time.perf_counter() - start
-                    if elapsed < 1:
-                        return contributions
-
-                    start = time.perf_counter()
-
-                ids = list(self._project_component_ids(values, component))
-                if not ids:
-                    continue
-
-                paths = self._download_resource(
-                    resource=component,
-                    ids=ids,
-                    fmt=fmt,
-                    outdir=outdir,
-                    overwrite=overwrite,
-                    timeout=timeout,
-                )
-                MPCC_LOGGER.debug(
-                    f"Downloaded {len(ids)} {component} for '{name}' in {len(paths)} file(s)."
-                )
-
-                match component:
-                    case "structures":
-                        component_cls: type[_Component] = MPCStructure
-                    case "tables":
-                        component_cls = Table
-                    case "attachments":
-                        component_cls = Attachment
-
-                for path in paths:
-                    with gzip.open(path, "rb") as f:
-                        for c in orjson.loads(f.read()):
-                            components_loaded[component][c["id"]] = (
-                                component_cls.from_dict(c)
-                            )
-
-            cids = list(self._project_contrib_ids(values))
-            if not cids:
-                continue
-
-            paths = self._download_resource(
-                resource="contributions",
-                ids=cids,
-                fmt=fmt,
-                outdir=outdir,
-                overwrite=overwrite,
-                timeout=timeout,
-            )
-            MPCC_LOGGER.debug(
-                f"Downloaded {len(cids)} contributions for '{name}' in {len(paths)} file(s)."
-            )
-
-            for path in paths:
-                with gzip.open(path, "rb") as f:
-                    for c in orjson.loads(f.read()):
-                        contrib = MPCDict(c)
-                        for component in components_loaded:
-                            contrib[component] = [
-                                components_loaded[component][d["id"]]
-                                for d in contrib.pop(component)
-                            ]
-
-                        contributions.append(contrib)
-
-        return contributions
 
     def download_structures(
         self,
