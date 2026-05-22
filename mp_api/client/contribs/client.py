@@ -266,7 +266,9 @@ class ContribsClient(BaseClient):
             force (bool): forces the deletion of all contributions in a project in the case that only a project field (matching regex: project.*) is set
         """
         query = (
-            self.projects.set_query_project(query=query, force=force) if query else {}
+            self.projects._resolve_project_query(query=query, force=force)
+            if query
+            else {}
         )
 
         tic = time.perf_counter()
@@ -313,7 +315,7 @@ class ContribsClient(BaseClient):
         """
         query = query or {}
 
-        query = self.projects.set_query_project(query, force=force)
+        query = self.projects._resolve_project_query(query, force=force)
 
         if paginate:
             cids: list[str] = []
