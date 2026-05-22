@@ -5,7 +5,7 @@ import asyncio
 import math
 from collections.abc import AsyncIterator
 from functools import cache
-from typing import Any, TypeVar
+from typing import TypeVar
 
 import httpx
 from pydantic import BaseModel, Field, model_validator

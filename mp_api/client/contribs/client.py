@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import gzip
-import re
 import time
 from collections import defaultdict
 from copy import deepcopy
