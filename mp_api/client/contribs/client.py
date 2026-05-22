@@ -294,6 +294,7 @@ class ContribsClient(BaseClient):
         sort: str | None = None,
         paginate: bool = False,
         timeout: int = -1,
+        *,
         force: bool = True,
     ) -> list[Contribution] | Paginator:
         """Query contributions.
@@ -306,6 +307,7 @@ class ContribsClient(BaseClient):
             sort (str): field to sort by; prepend +/- for asc/desc order
             paginate (bool): paginate through all results
             timeout (int): cancel remaining requests if timeout exceeded (in seconds)
+            force (bool): force query on single project
 
         Returns:
             List of contributions

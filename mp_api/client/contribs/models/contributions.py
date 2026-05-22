@@ -4,7 +4,7 @@ from typing import Any, Self, cast, get_args
 
 import pandas as pd
 from emmet.core.types.typing import DateTimeType
-from pydantic import ValidationError, field_serializer, field_validator, model_validator
+from pydantic import field_serializer, field_validator
 from pymatgen.core import Structure
 
 from mp_api.client.contribs.models.attachments import Attachments
