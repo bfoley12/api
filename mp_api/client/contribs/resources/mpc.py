@@ -5,7 +5,7 @@ from functools import wraps
 
 
 def format_output(fn):
-    """Formats output to be MPC compatible, if use_document_model is true."""
+    """Formats output to be MPC compatible, if use_document_model is False."""
 
     def _format(self, result):
         if result is None or self.use_document_model:
