@@ -432,14 +432,14 @@ class ContribsClient(BaseClient):
         Raises:
             MPContribsClientError on malformed submitted data.
         """
-        if not contributions or not isinstance(contributions, list):
+        if not contributions:
             raise MPContribsClientError(
                 "Please provide list of contributions to submit."
             )
 
         # Steps to take for each contribution:
         # If id not in the contribution:
-        # 1. check if contribution exists with the same project, identifier, and formula
+        # 1. check if contribution exists with the same project, and identifier
         # - if not, insert normally
         # - if there is then check if we are allowing duplicates. If so, continue. If not, log warning/throw error
         # 2. pull out and validate components for submission
@@ -454,6 +454,7 @@ class ContribsClient(BaseClient):
 
         # get existing contributions
         tic = time.perf_counter()
+
         project_name_set: set[str] = set()
         collect_ids = []
         require_one_of = {"data"} | set(MPCC_SETTINGS.COMPONENTS)
