@@ -392,6 +392,7 @@ class ContribsClient(BaseClient):
         toc = time.perf_counter()
         return {"updated": num_updated, "total": total, "seconds_elapsed": toc - tic}
 
+    @helpers.timeit
     def submit_contributions(
         self,
         contributions: list[dict],
@@ -453,8 +454,6 @@ class ContribsClient(BaseClient):
         # If we are updating components, follow similar logic as above
 
         # get existing contributions
-        tic = time.perf_counter()
-
         project_name_set: set[str] = set()
         collect_ids = []
         require_one_of = {"data"} | set(MPCC_SETTINGS.COMPONENTS)
@@ -799,11 +798,6 @@ class ContribsClient(BaseClient):
                 self.init_columns(name=project_name)
 
             self._reinit()
-            toc = time.perf_counter()
-            dt = (toc - tic) / 60
-            MPCC_LOGGER.info(
-                f"It took {dt:.1f}min to submit {total_processed}/{total} contributions."
-            )
         else:
             MPCC_LOGGER.info("Nothing to submit.")
 

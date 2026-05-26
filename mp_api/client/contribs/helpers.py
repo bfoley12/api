@@ -59,6 +59,11 @@ class VALID_OPS(StrEnum):
 VALID_OPS_T = Literal[*VALID_OPS]  # type: ignore[valid-type]
 
 
+def _short(obj, limit=80):
+    r = repr(obj)
+    return r if len(r) <= limit else r[:limit] + f"...<{len(r)} chars>"
+
+
 def timeit(func):
     """Decorator for functions that want to log timing info."""
 
@@ -70,7 +75,8 @@ def timeit(func):
         finally:
             elapsed = time.perf_counter() - start
             arg_repr = ", ".join(
-                [repr(a) for a in args] + [f"{k}={v!r}" for k, v in kwargs.items()]
+                [_short(a) for a in args]
+                + [f"{k}={_short(v)!r}" for k, v in kwargs.items()]
             )
             MPCC_LOGGER.info("%s(%s) took %.4fs", func.__name__, arg_repr, elapsed)
 
