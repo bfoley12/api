@@ -1,16 +1,39 @@
 from __future__ import annotations
 
+import polars as pl
 from pydantic import BaseModel
+from pymatgen.core import Element
 
 from mp_api.client.contribs.models.base import ContributionsSupplemental
 
 
+class SiteProperties(BaseModel):
+    magmom: float
+
+
+class Species(BaseModel):
+    element: Element
+    occu: int
+
+
 class Lattice(BaseModel):
-    pass
+    matrix: pl.DataFrame
+    pbc: list[bool]
+    a: float
+    b: float
+    c: float
+    alpha: float
+    beta: float
+    gamma: float
+    volume: float
 
 
-class Sites(BaseModel):
-    pass
+class Site(BaseModel):
+    species: list[Species]
+    abc: list[float]
+    properties: SiteProperties
+    label: str
+    xyz: list[float]
 
 
 # Some things in Emmet-core that could assist in translating the pymatgen string to BaseModel
@@ -22,6 +45,16 @@ class Cif(BaseModel):
 
 class ContributionsStructures(ContributionsSupplemental):
     lattice: Lattice
-    sites: Sites
+    sites: list[Site]
     charge: float | None
     cif: Cif
+
+
+class StructureSubmission(BaseModel):
+    name: str
+    lattice: Lattice
+    sites: list[Site]
+    charge: float | None
+    md5: str
+    cif: str
+    # cif: Cif
