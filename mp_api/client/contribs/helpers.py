@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import importlib.metadata
 import itertools
+import logging
 import sys
 import time
 import warnings
@@ -13,7 +14,7 @@ from concurrent.futures import as_completed
 from enum import StrEnum
 from pathlib import Path
 from tempfile import gettempdir
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Mapping
 from urllib.parse import urlsplit
 
 import orjson
@@ -56,6 +57,24 @@ class VALID_OPS(StrEnum):
 
 
 VALID_OPS_T = Literal[*VALID_OPS]  # type: ignore[valid-type]
+
+
+def timeit(func):
+    """Decorator for functions that want to log timing info."""
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        start = time.perf_counter()
+        try:
+            return func(*args, **kwargs)
+        finally:
+            elapsed = time.perf_counter() - start
+            arg_repr = ", ".join(
+                [repr(a) for a in args] + [f"{k}={v!r}" for k, v in kwargs.items()]
+            )
+            MPCC_LOGGER.info("%s(%s) took %.4fs", func.__name__, arg_repr, elapsed)
+
+    return wrapper
 
 
 def prune_dict(
