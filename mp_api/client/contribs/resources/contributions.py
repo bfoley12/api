@@ -7,7 +7,12 @@ import httpx
 import mp_api.client.contribs.pagination as pagination
 from mp_api.client.contribs import helpers
 from mp_api.client.contribs._logger import MPCC_LOGGER
-from mp_api.client.contribs.models.contributions import Contribution
+from mp_api.client.contribs.helpers import NonEmptyList
+from mp_api.client.contribs.models.contributions import (
+    Contribution,
+    ContributionSubmission,
+    ContributionUserSubmission,
+)
 from mp_api.client.contribs.resources.base import (
     AsyncBaseProtocol,
     AsyncBaseResource,
@@ -15,13 +20,18 @@ from mp_api.client.contribs.resources.base import (
     BaseResource,
 )
 from mp_api.client.contribs.resources.mpc import format_output
+from mp_api.client.contribs.resources.shared import UpsertResponse
 from mp_api.client.contribs.settings import MPCC_SETTINGS
 from mp_api.client.core.exceptions import MPContribsClientError
 
 
 class ContributionsProtocol(BaseProtocol):
     def get_by_id(self, id: str, fields: list[str] | None) -> Contribution: ...
-    def create(self): ...
+    def create(
+        self,
+        contributions: NonEmptyList[ContributionSubmission | dict[str, Any]],
+        allow_duplicates: bool = False,
+    ) -> list[str]: ...
     def query(
         self,
         query: dict | None = None,
@@ -30,8 +40,14 @@ class ContributionsProtocol(BaseProtocol):
         _timeout: int = -1,
     ) -> list[Contribution] | pagination.Paginator: ...
     def update(
-        self, data: dict, query: dict | None = None, _timeout: int = -1
+        self,
+        data: ContributionSubmission | dict[str, Any],
+        query: dict[str, Any] | None = None,
+        _timeout: int = -1,
     ) -> int: ...
+    def upsert(
+        self, data: NonEmptyList[ContributionSubmission], allow_duplicates: bool = False
+    ) -> UpsertResponse: ...
     def remove(self, query: dict[str, Any], _timeout: int = -1) -> int: ...
     def _get_contrib_identifier_payloads(
         self,
@@ -40,6 +56,12 @@ class ContributionsProtocol(BaseProtocol):
         data_id_fields: dict[str, str] | None = None,
         _timeout: int = -1,
     ) -> tuple[list[Contribution], set[str], dict[str, str]]: ...
+    def _validate_contributions(
+        self,
+        contributions: NonEmptyList[dict[str, Any]],
+        *,
+        project_name: str | None = None,
+    ) -> list[ContributionUserSubmission]: ...
 
 
 class AsyncContributionsProtocol(AsyncBaseProtocol):
@@ -82,6 +104,7 @@ class ContributionsResource(BaseResource, ContributionsProtocol):
             endpoint_slug=endpoint_slug,
         )
 
+    @helpers.timeit
     @format_output
     def get_by_id(self, id: str, fields: list[str] | None) -> Contribution:
         if not fields:
@@ -95,8 +118,68 @@ class ContributionsResource(BaseResource, ContributionsProtocol):
 
         return Contribution.model_validate(contrib)
 
-    def create(self):
-        pass
+    def create(
+        self,
+        contributions: NonEmptyList[ContributionSubmission | dict[str, Any]],
+        allow_duplicates=False,
+    ) -> list[str]:
+        # If given a dict, validate and create ContributionSubmission models
+        parsed: list[ContributionSubmission] = [
+            c
+            if isinstance(c, ContributionSubmission)
+            else ContributionSubmission.model_validate(c)
+            for c in contributions
+        ]
+
+        new_contrib_ids: list[str] = []
+        to_submit: list[dict[str, Any]] = []
+        # Create each contribution if not duplicate (or if duplicates allowed)
+        for contrib in parsed:
+            # Search for duplicate contributions
+            # Brendan TODO: This check should be handled server-side
+            existing_contrib = self.query(query=contrib.id_fields)
+            if (not existing_contrib) or allow_duplicates:
+                to_submit.append(contrib.model_dump(mode="json"))
+        # Bulk post
+        res = self.post(json=to_submit)
+        new_contrib_ids.append(res["data"]["id"])
+
+        return new_contrib_ids
+
+    def _validate_contributions(
+        self,
+        contributions: NonEmptyList[dict[str, Any]],
+        *,
+        project_name: str | None = None,
+    ) -> list[ContributionUserSubmission]:
+        required_data_keys = {"data"} | set(MPCC_SETTINGS.COMPONENTS)
+        for idx, c in enumerate(contributions):
+            has_keys = required_data_keys & c.keys()
+            if "attachment" in c:
+                MPCC_LOGGER.warning(
+                    f"attachments are deprecated. Dropping attachments from contribution #{idx}"
+                )
+                _ = c.pop("attachment")
+            if not has_keys:
+                raise MPContribsClientError(
+                    f"Nothing to submit for contribution #{idx}!"
+                )
+            elif not all(c[k] for k in has_keys):
+                for k in has_keys:
+                    if not c[k]:
+                        raise MPContribsClientError(
+                            f"Empty `{k}` for contribution #{idx}!"
+                        )
+            if (project_name and "project" not in c) and "identifier" in c:
+                contributions[idx]["project"] = project_name
+            elif not ("id" in c or ("project" in c and "identifier" in c)):
+                raise MPContribsClientError(
+                    f"Provide `project` & `identifier`, or `id` for contribution #{idx}!"
+                )
+        return [
+            ContributionUserSubmission.model_validate(contrib)
+            for contrib in contributions
+        ]
 
     def _get_contrib_identifier_payloads(
         self,
@@ -181,9 +264,10 @@ class ContributionsResource(BaseResource, ContributionsProtocol):
         )
         return [Contribution.model_validate(c) for c in contribs["data"]]
 
+    @helpers.timeit
     def update(
         self,
-        data: dict[str, Any],
+        data: ContributionSubmission | dict[str, Any],
         query: dict[str, Any] | None = None,
         _timeout: int = -1,
     ) -> int:
@@ -196,51 +280,77 @@ class ContributionsResource(BaseResource, ContributionsProtocol):
             query (dict): optional query to select contributions
             timeout (int): cancel remaining requests if timeout exceeded (in seconds)
         """
-        # Brendan TODO: Decide if contributions should recheck so we can have individual validation
-        # if not data:
-        #     raise MPContribsClientError("Nothing to update.")
-
-        # tic = time.perf_counter()
-        # self._is_valid_payload(Contribution, data)
-
-        # if "data" in data:
-        #     self._is_serializable_dict(data["data"])
-
-        # query = query or {}
-
-        # if self.project:
-        #     if "project" in query and self.project != query["project"]:
-        #         raise MPContribsClientError(
-        #             f"client initialized with different project {self.project}!"
-        #         )
-        #     query["project"] = self.project
-        # else:
-        #     if not query or "project" not in query:
-        #         raise MPContribsClientError(
-        #             "initialize client with project, or include project in query!"
-        #         )
-
-        # name = query["project"]
-        # project_ids = self.get_all_ids(query).get(name)
-        # cids = list(self._project_contrib_ids(project_ids))
-
-        # if not cids:
-        #     raise MPContribsClientError(
-        #         f"There aren't any contributions to update for {name}"
-        #     )
-
-        # # get current list of data columns to decide if swagger reload is needed
-        # resp = self.projects.getProjectByName(pk=name, _fields=["columns"]).result()
-        # old_paths = {c["path"] for c in resp["columns"]}
+        if not data:
+            raise MPContribsClientError("Nothing to update.")
         query = query or {}
-        if "id__in" not in query:
-            raise MPContribsClientError(f"no id__in provided in query: {query}")
-        res = self.fetch_all(
-            query=query, model=Contribution, op=helpers.VALID_OPS.UPDATE
-        )
-        num_updated = len(res)
+        # Validate identifiying fields: pk (single-contrib update: contributions/{pk}), id (multi-contrib update), or project & identifier (multi-contrib update w/o id)
+        pk_present = helpers.find_field_params(field="pk", params=query)
+        if not (
+            pk_present
+            or helpers.find_field_params(field="id", params=query)
+            or (
+                helpers.find_field_params("project", query)
+                and helpers.find_field_params("identifier", query)
+            )
+        ):
+            raise MPContribsClientError(
+                f"No identifying fields (pk, id*, or project* & identifier*) provided in query: {query}"
+            )
+
+        if isinstance(data, ContributionSubmission):
+            data = data.model_dump(mode="json")
+        # If updating by single pk, get path (contributions/{pk})
+        path = query.pop("pk", "")
+        res = self.put(path=path, params=query, json=data)
+        num_updated = res["total_count"]
 
         return num_updated
+
+    def upsert(
+        self, data: NonEmptyList[ContributionSubmission], allow_duplicates=False
+    ) -> UpsertResponse:
+        create_subs = []
+        update_subs = []
+        update_query: list[dict[str, Any]] = []
+
+        # If we allow duplicates, we are always POSTing new documents
+        if allow_duplicates:
+            create_subs = data
+        # Otherwise, we call PUT and have the server decide
+        else:
+            # for each contribution, decide whether it is an update or create based on identifier (pk or project & identifier) presence
+            for submission in data:
+                # See if submission exists (update)
+                if existing_id := self._check_exists(submission):
+                    update_query.append({"id": existing_id})
+                    submission.id = existing_id
+                    update_subs.append(submission)
+                # Otherwise, it's a create
+                else:
+                    create_subs.append(submission)
+        # Run all updates
+        num_updated = 0
+        for update_data in zip(update_subs, update_query, strict=True):
+            num_updated += self.update(update_data[0], update_data[1])
+
+        # Create new contributions
+        new_contrib_ids = self.create(create_subs)
+
+        resp = UpsertResponse(new_ids=new_contrib_ids, num_updated=num_updated)
+        return resp
+
+    def _check_exists(self, data: ContributionSubmission) -> str:
+        params: dict[str, Any] = {"_fields": ["id"]}
+        if data.id:
+            params |= {"id": data.id}
+        elif data.project and data.identifier:
+            params |= {"project": data.project, "identifier": data.identifier}
+        resp = self.get(params=params)
+        resp_data = resp["data"]
+        if not resp_data:
+            return ""
+        else:
+            return resp_data[0]["id"]
 
 
 class AsyncContributionsResource(AsyncBaseResource, AsyncContributionsProtocol):
