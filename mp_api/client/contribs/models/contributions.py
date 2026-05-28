@@ -7,7 +7,6 @@ from emmet.core.types.typing import DateTimeType
 from pydantic import ConfigDict, field_serializer, field_validator
 from pymatgen.core import Structure
 
-from mp_api.client.contribs.helpers import serialize_datetime
 from mp_api.client.contribs.models.attachments import Attachment
 from mp_api.client.contribs.models.base import ContribsBase
 from mp_api.client.contribs.models.tables import TableStub
