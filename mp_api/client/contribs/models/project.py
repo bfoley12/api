@@ -46,8 +46,8 @@ class ContribsProjectFields(TypedDict):
 class ContribsProject(ContribsBase):
     """Define schema for MP Contribs Project."""
 
-    name: str | None = None
-    title: str | None = None
+    name: str | None = Field(default=None, max_length=30, min_length=3)
+    title: str | None = Field(default=None, max_length=30, min_length=3)
     owner: str | None = None
     references: list[Reference] = []
 
