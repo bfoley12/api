@@ -109,7 +109,6 @@ class ContributionsResource(BaseResource, ContributionsProtocol):
     def get_by_id(self, id: str, fields: list[str] | None) -> Contribution:
         if not fields:
             fields = list(Contribution.model_fields.keys())
-            fields.remove("needs_build")  # internal field
 
         params = {"_fields": ",".join(fields)}
         if not id.endswith("/"):

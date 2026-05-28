@@ -23,7 +23,6 @@ class ContributionBase(ContribsBase):
     formula: str | None = None
     is_public: bool = False
     last_modified: DateTimeType
-    needs_build: bool = True
     data: dict[str, str | bool | Datum | None] = {}
 
     @field_validator("data", mode="before")
