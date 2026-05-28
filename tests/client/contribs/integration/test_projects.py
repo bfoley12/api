@@ -3,6 +3,7 @@ from uuid import uuid4
 import httpx
 import pytest
 
+from mp_api.client.contribs.errors import APIError
 from mp_api.client.contribs.models.project import ContribsProject
 
 # pytestmark = pytest.mark.integration
@@ -64,7 +65,7 @@ class TestGetProject:
 
     def test_get_project_errors_on_name(self, client):
         project_name = "fake_name_123"
-        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        with pytest.raises(APIError) as exc_info:
             client.get_project(project_name)
         assert project_name in str(exc_info.value)
         assert exc_info.value.response.status_code == 404
@@ -131,7 +132,7 @@ class TestQueryProject:
         ids=["single", "composite"],
     )
     def test_query_projects_wrong_name_error(self, client, query):
-        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        with pytest.raises(APIError) as exc_info:
             client.query_projects(query=query)
         assert "fake_name_123" in str(exc_info.value)
         assert exc_info.value.response.status_code == 404
@@ -167,7 +168,7 @@ class TestCreateProject:
 class TestUpdateProject:
     # Note: had to use riken_trip_magnets_database because the API server cannot handle special characters (ie. delta) in the object to update.
     def test_update_project(self, client):
-        new_title = str(uuid4())[0:20]
+        new_title = str(uuid4())[:20]
         resp = client.update_project(
             {"title": new_title}, name="riken_trip_magnets_database"
         )
