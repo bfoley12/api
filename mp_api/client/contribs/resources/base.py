@@ -243,7 +243,7 @@ class BaseResource(BaseProtocol):
         return total_count, total_pages
 
     def _probe(self, q: dict, _timeout: int = -1) -> tuple[int, int]:
-        real_per_page = q["_limit"]
+        real_per_page = q.get("_limit", 1)
         params = {**q, "_limit": 1, "page": 1}
         resp = self.get(params=params, _timeout=_timeout)
         _ = resp.pop("data")
