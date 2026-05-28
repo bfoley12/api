@@ -9,6 +9,7 @@ from mp_api.client.contribs.client import (
 from swagger_spec_validator.common import SwaggerValidationError
 
 
+# ----- Old: Regression Tests -----
 def test_validate_email():
     validate_email("google:phuck@lbl.gov")
     with pytest.raises(SwaggerValidationError):
