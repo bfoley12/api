@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import cached_property
 from typing import TYPE_CHECKING, Self
 
 import httpx
@@ -7,6 +8,7 @@ import orjson
 
 from mp_api.client.contribs import helpers
 from mp_api.client.contribs._logger import MPCC_LOGGER
+from mp_api.client.contribs.errors import check_response
 from mp_api.client.contribs.settings import MPCC_SETTINGS
 from mp_api.client.core.exceptions import MPContribsClientError
 
@@ -87,15 +89,11 @@ class BaseClient:
         api_key, kwargs = handle_api_key(api_key, headers, **kwargs)
 
         # Brendan TODO: Could go even further and define a Transport class for some (or all) fields. Probably too much indirection though
+        # Set headers
         self.api_key = api_key
-        self.headers = headers or {}
-        self.headers["x-api-key"] = api_key if api_key else None
-        self.headers["Content-Type"] = "application/json"
-        if http is not None and self.headers:
-            http.headers.update(**self.headers)
-        self.headers_json = orjson.dumps(
-            {k: self.headers[k] for k in sorted(self.headers)}
-        )
+        self.headers = self._prep_headers(headers, self.api_key)
+
+        # Define url
         self.host = host or MPCC_SETTINGS.API_HOST
         ssl = self.host.endswith(".materialsproject.org") and not self.host.startswith(
             "localhost."
@@ -109,12 +107,29 @@ class BaseClient:
                 f"{self.url} not a valid URL (one of "
                 f"{', '.join(MPCC_SETTINGS.VALID_URLS)})"
             )
-        self._http = (
-            http
-            if http is not None
-            else httpx.Client(base_url=self.url, headers=self.headers)
-        )
+
+        # create http client
+        if not http:
+            http = httpx.Client(
+                base_url=self.url, event_hooks={"response": [check_response]}
+            )
+        if self.headers:
+            http.headers.update(**self.headers)
+        self._http = http
+
         self.version = helpers._version(self.url)  # includes healthcheck
+
+    def _prep_headers(
+        self, headers: dict[str, Any] | None, api_key: str | None
+    ) -> dict[str, Any]:
+        final_headers = headers or {}
+        final_headers["x-api-key"] = api_key if api_key else None
+        final_headers["Content-Type"] = "application/json"
+        return final_headers
+
+    @cached_property
+    def headers_json(self) -> bytes:
+        return orjson.dumps({k: self.headers[k] for k in sorted(self.headers)})
 
     def close(self) -> None:
         self._http.close()
