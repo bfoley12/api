@@ -19,6 +19,14 @@ class APIError(Exception):
 
 
 def check_response(response: httpx.Response) -> None:
+    """Event hook for httpx.Clients to automatically return errors from apis as an APIError.
+
+    Args:
+        response (httpx.Response): the response from an httpx.request
+
+    Raises:
+        APIError: if response is an error
+    """
     if response.is_error:
         response.read()
         raise APIError(response)
