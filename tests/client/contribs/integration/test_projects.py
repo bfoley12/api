@@ -1,7 +1,5 @@
-from sys import exc_info
 from uuid import uuid4
 
-import httpx
 import pytest
 
 from mp_api.client.contribs.errors import APIError
