@@ -114,7 +114,7 @@ class BaseClient:
                 base_url=self.url, event_hooks={"response": [check_response]}
             )
         if self.headers:
-            http.headers.update(**self.headers)
+            http.headers.update(self.headers)
         self._http = http
 
         self.version = helpers._version(self.url)  # includes healthcheck
