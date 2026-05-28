@@ -5,22 +5,25 @@ from __future__ import annotations
 import functools
 import importlib.metadata
 import itertools
-import logging
+import re
 import sys
 import time
 import warnings
 from base64 import urlsafe_b64encode
+from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from concurrent.futures import as_completed
 from enum import StrEnum
 from pathlib import Path
 from tempfile import gettempdir
-from typing import TYPE_CHECKING, Literal, Mapping
+from typing import TYPE_CHECKING, Annotated, overload
 from urllib.parse import urlsplit
 
 import orjson
 import pandas as pd
 import plotly.io as pio
 import requests
+from annotated_types import MinLen
 from bravado.config import bravado_config_from_config_dict
 from bravado.requests_client import RequestsClient
 from bravado.swagger_model import Loader
@@ -56,7 +59,42 @@ class VALID_OPS(StrEnum):
     DOWNLOAD = "download"
 
 
-VALID_OPS_T = Literal[*VALID_OPS]  # type: ignore[valid-type]
+type NonEmptyList[T] = Annotated[Sequence[T], MinLen(1)]
+
+
+@overload
+def find_field_params[V](
+    field: str, params: Mapping[str, V], *, include_exact: bool = ...
+) -> dict[str, V]: ...
+@overload
+def find_field_params(
+    field: str,
+    params: AbstractSet[str] | Sequence[str],
+    *,
+    include_exact: bool = ...,
+) -> list[str]: ...
+def find_field_params(field, params, *, include_exact=True):
+    """Find filter params that target `field`.
+
+    Matches `<field>__<lookup-or-operator>` keys — e.g. for field="project":
+    "project__in", "project__not__in". Nested lookups like "data__S__not__in"
+    match when field="data". With `include_exact=True`, the bare `field` also
+    matches.
+
+    A Mapping yields the matching sub-dict; a set/sequence of strings yields
+    a list. A bare str is rejected at runtime.
+    """
+    if isinstance(params, str):
+        raise TypeError("params must be a Mapping, Set, or Sequence, not str")
+
+    suffix = r"(?:__.+)?" if include_exact else r"(?:__.+)"
+    pattern = re.compile(rf"^{re.escape(field)}{suffix}$")
+
+    if isinstance(params, Mapping):
+        return {
+            k: v for k, v in params.items() if isinstance(k, str) and pattern.match(k)
+        }
+    return [k for k in params if isinstance(k, str) and pattern.match(k)]
 
 
 def _short(obj, limit=80):
