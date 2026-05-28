@@ -31,6 +31,9 @@ class ContribsProjectFields(TypedDict):
     name: str
     title: str
     authors: str
+    # Project is required by the API server, but sets whatever it is to the email that posted it
+    # - api should either not require it or make it optional
+    owner: str
     description: str
     references: list[Reference]
 
