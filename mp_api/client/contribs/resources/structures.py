@@ -5,11 +5,13 @@ from typing import Any
 import httpx
 
 from mp_api.client.contribs import pagination
+from mp_api.client.contribs.client import PmgStructure
+from mp_api.client.contribs.helpers import NonEmptyList
 from mp_api.client.contribs.models.structures import (
     ContributionsStructures,
-    StructureSubmission,
 )
 from mp_api.client.contribs.resources.base import BaseProtocol, BaseResource
+from mp_api.client.contribs.resources.shared import UpsertResponse
 
 
 class StructureProtocol(BaseProtocol):
@@ -27,17 +29,19 @@ class StructureProtocol(BaseProtocol):
     ) -> list[ContributionsStructures] | pagination.Paginator: ...
     def update(
         self,
-        data: StructureSubmission | dict[str, Any],
+        data: ContributionsStructures | dict[str, Any],
         query: dict[str, Any] | None = None,
         _timeout: int = -1,
     ) -> int: ...
     def upsert(
-        self, data: list[StructureSubmission], allow_duplicates: bool = False
-    ) -> dict[str, Any]: ...
+        self,
+        data: NonEmptyList[ContributionsStructures | PmgStructure],
+        allow_duplicates: bool = False,
+    ) -> UpsertResponse: ...
     def remove(self, query: dict[str, Any], _timeout: int = -1) -> int: ...
 
 
-class StructureResource(BaseResource, BaseProtocol):
+class StructureResource(BaseResource, StructureProtocol):
     def __init__(
         self,
         http: httpx.Client,
@@ -52,6 +56,9 @@ class StructureResource(BaseResource, BaseProtocol):
         )
 
     def upsert(
-        self, data: list[StructureSubmission], allow_duplicates: bool = False
-    ) -> dict[str, Any]:
-        return {}
+        self,
+        data: NonEmptyList[ContributionsStructures | PmgStructure],
+        allow_duplicates: bool = False,
+    ) -> UpsertResponse:
+
+        return UpsertResponse(new_ids=[""])
