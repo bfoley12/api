@@ -119,10 +119,10 @@ class BaseClient:
     def close(self) -> None:
         self._http.close()
 
-    async def __enter__(self) -> Self:
+    def __enter__(self) -> Self:
         return self
 
-    async def __exit__(self, *exc_info: object) -> None:
+    def __exit__(self, *exc_info: object) -> None:
         self.close()
 
     @property
