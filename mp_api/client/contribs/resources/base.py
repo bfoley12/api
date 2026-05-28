@@ -116,14 +116,10 @@ class BaseResource(BaseProtocol):
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        headers: dict[str, Any] | None = None,
         **kwargs,
     ) -> httpx.Response:
-        r = self.http.request(
-            method,
-            path,
-            params=params,
-            json=json,
-        )
+        r = self.http.request(method, path, params=params, json=json, headers=headers)
         r.raise_for_status()
         return r
 
@@ -135,6 +131,8 @@ class BaseResource(BaseProtocol):
         path = self.endpoint_slug + path
         return self._request("POST", path, **kwargs).json()
 
+    # Brendan TODO: model put response (as seen from put contributions):
+    # {count: int, has_more: bool, total_count:int}
     def put(self, path: str = "", **kwargs) -> dict[str, Any]:
         path = self.endpoint_slug + path
         return self._request("PUT", path, **kwargs).json()
@@ -277,10 +275,7 @@ class BaseResource(BaseProtocol):
         resource: VALID_RESOURCES = VALID_RESOURCES.CONTRIBUTIONS,
         timeout: int = -1,
     ) -> list[T]:
-        """Resolve totals, split the query, fan out, return a flat list of items.
-
-        The results are the models with default values in fields that were not provided.
-        """
+        """Resolve totals, split the query, fan out, return a flat list of items."""
         # Brendan TODO: contributions/?per_page=# does not actually work. Must Use _limit
         # - Would like to make a Query class based on the endpoint
         if "per_page" in query:
