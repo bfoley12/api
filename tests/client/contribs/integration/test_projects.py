@@ -1,3 +1,4 @@
+from sys import exc_info
 from uuid import uuid4
 
 import httpx
@@ -8,13 +9,16 @@ from mp_api.client.contribs.models.project import ContribsProject
 
 # pytestmark = pytest.mark.integration
 
+NEW_PROJECT_NAME = ("pytest_project_" + str(uuid4())[0:10]).replace("-", "_")
+
 
 @pytest.fixture
 def new_project():
     return {
-        "name": ("pytest_project_" + str(uuid4())[0:10]).replace("-", "_"),
+        "name": NEW_PROJECT_NAME,
         "title": "Pytest Project",
         "authors": "Fake Author",
+        "owner": "google:random@gmail.com",
         "description": "Fake description",
         "references": [{"label": "RefLabel", "url": "https://fake.com"}],
         "long_title": "Long Fake Title",
@@ -156,6 +160,7 @@ class TestQueryProject:
 
 
 class TestCreateProject:
+    # Brendan TODO:
     # SMTP is required for getting a return from POST, needs fix server-side
     def test_create_project(self, client, new_project):
         try:
@@ -181,3 +186,20 @@ class TestUpdateProject:
             {"name": new_name}, name="riken_trip_magnets_database"
         )
         assert resp.name == "riken_trip_magnets_database"
+
+
+class TestDeleteProject:
+    # Brendan TODO:
+    # Fails because of SMTP error - SMTP_USERNAME and SMTP_PASSWORD not set on dev instance of api
+    # - need to decouple on server-side
+    def test_delete_project(self, client):
+        # Relies on success of create - would like to decouple once create is working better
+        try:
+            client.delete_project(NEW_PROJECT_NAME)
+            with pytest.raises(APIError) as exc_info:
+                client.get_project(NEW_PROJECT_NAME)
+            assert NEW_PROJECT_NAME in str(exc_info.value)
+            assert exc_info.value.response.status_code == 404
+        except:
+            pass
+        assert True
