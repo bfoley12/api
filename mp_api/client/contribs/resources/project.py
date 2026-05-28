@@ -44,7 +44,7 @@ class ProjectProtocol(BaseProtocol):
         _timeout: int = -1,
     ) -> list[ContribsProject]: ...
 
-    def create(self, **kwargs: Unpack[ContribsProjectFields]) -> None: ...
+    def create(self, **kwargs: Unpack[ContribsProjectFields]) -> ContribsProject: ...
 
     def update(
         self, update: dict[str, Any], name: str | None = None
@@ -191,6 +191,7 @@ class ProjectResource(BaseResource, ProjectProtocol):
         res = self.get(name, params=params)
         return ContribsProject.model_validate(res)
 
+    # Deprecated enpoint
     def search(self, term: str) -> Response:
         """Queries projects/search for documents matching terms.
 
@@ -233,9 +234,13 @@ class ProjectResource(BaseResource, ProjectProtocol):
                 )
             ]
 
+        # term is deprecated
         if term:
-            search_results = self.search(term=term)
-            query["name__in"] = search_results["data"]
+            MPCC_LOGGER.warning(
+                "'term' is deprecated. Please see OpenAPI specs to search for projects."
+            )
+            # search_results = self.search(term=term)
+            # query["name__in"] = search_results["data"]
         query["_fields"] = fields
         query["_sort"] = sort
 
@@ -248,7 +253,12 @@ class ProjectResource(BaseResource, ProjectProtocol):
         )
         return project_list
 
-    def create(self, **kwargs: Unpack[ContribsProjectFields]) -> None:
+    # Brendan TODO: Server-side: add checks for uniqueness
+    # Brendan TODO: On API server, the reasons for rejected project names is not clear
+    # - and '.' and ' ' not allowed in Reference.label?
+    # Brendan TODO: Server-side need to return posted object and handle failed SMTP auth better
+    # - currently failed SMTP auth blocks a return value and throws a 500 error
+    def create(self, **kwargs: Unpack[ContribsProjectFields]) -> ContribsProject:
         """Create a project.
 
         Args:
@@ -258,14 +268,14 @@ class ProjectResource(BaseResource, ProjectProtocol):
             description (str): brief description (max 2000 characters)
             url (str): URL for primary reference (paper/website/...)
         """
-        queries = [{"name": kwargs.get("name")}, {"title": kwargs.get("title")}]
-        for query in queries:
-            total_count, total_pages = self.scan(
-                query=query, resource=VALID_RESOURCES.PROJECTS, name=self.name
-            )
-            if total_count:
-                raise MPContribsClientError(f"Project with {query} already exists!")
-
+        # Remove checking, belongs server-side
+        # queries = [{"name": kwargs.get("name")}, {"title": kwargs.get("title")}]
+        # for query in queries:
+        #     total_count, total_pages = self.scan(
+        #         query=query, resource=VALID_RESOURCES.PROJECTS, name=self.name
+        #     )
+        #     if total_count:
+        #         raise MPContribsClientError(f"Project with {query} already exists!")
         project = ContribsProject(**kwargs)
         resp = self.post(json=project.to_draft())
         # TODO: When posting, owner was not optional
@@ -274,8 +284,7 @@ class ProjectResource(BaseResource, ProjectProtocol):
             MPCC_LOGGER.info(
                 f"Project `{kwargs.get('name')}` created with owner `{owner}`"
             )
-        else:
-            raise MPContribsClientError(resp.get("error", resp))
+        return ContribsProject(**resp["data"])
 
     def update(
         self, update: dict[str, Any], name: str | None = None
@@ -320,6 +329,9 @@ class ProjectResource(BaseResource, ProjectProtocol):
             required_keys=fields,
             reference=project,
         )
+        # If there is nothing left to update after pruning, return the unmanipulated object
+        if not payload:
+            return project
         # Merge so _is_valid_payload can construct the object with all required keys
         merged_payload = {**project.model_dump(), **payload}
         return_value = self._is_valid_payload(ContribsProject, merged_payload)
