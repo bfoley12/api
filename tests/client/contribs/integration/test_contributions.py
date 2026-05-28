@@ -60,3 +60,15 @@ class TestGetContribution:
             client.get_contribution(cid)
         assert cid in str(exc_info.value)
         assert exc_info.value.response.status_code == 404
+
+class TestQueryContribution:
+    pass
+
+class TestUpdateContribution:
+    pass
+
+class TestSubmitContribution:
+    pass
+
+class TestDeleteContributions:
+    def test_delete_contributions(self, client):
