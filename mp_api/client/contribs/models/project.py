@@ -33,7 +33,6 @@ class ContribsProjectFields(TypedDict):
     authors: str
     description: str
     references: list[Reference]
-    stats: Stats
 
     columns: list[Column]
     long_title: str
@@ -41,7 +40,6 @@ class ContribsProjectFields(TypedDict):
     is_approved: bool
     unique_identifiers: bool
     license: License
-    owner: str
     other: dict[str, Any]
 
 

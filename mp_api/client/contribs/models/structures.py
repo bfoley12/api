@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import polars as pl
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from pymatgen.core import Element
 
 from mp_api.client.contribs.models.base import ContributionsSupplemental
@@ -17,6 +17,7 @@ class Species(BaseModel):
 
 
 class Lattice(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
     matrix: pl.DataFrame
     pbc: list[bool]
     a: float
@@ -48,13 +49,3 @@ class ContributionsStructures(ContributionsSupplemental):
     sites: list[Site]
     charge: float | None
     cif: Cif
-
-
-class StructureSubmission(BaseModel):
-    name: str
-    lattice: Lattice
-    sites: list[Site]
-    charge: float | None
-    md5: str
-    cif: str
-    # cif: Cif

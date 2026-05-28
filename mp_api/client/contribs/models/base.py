@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import re
-from typing import Annotated
+from typing import Annotated, Any
 
-from pydantic import AfterValidator
+from pydantic import AfterValidator, model_validator
 
+from mp_api.client.contribs.utils import get_md5
 from mp_api.client.core.schemas import _DictLikeAccess
 
 
@@ -28,6 +29,12 @@ Md5Hash = Annotated[str, AfterValidator(_validate_md5)]
 
 
 class ContributionsSupplemental(_DictLikeAccess):
-    id: str
+    id: str | None = None
     name: str
     md5: Md5Hash
+
+    @model_validator(mode="before")
+    def generate_md5(cls, data: dict[str, Any]) -> dict[str, Any]:
+        if "md5" not in data:
+            data["md5"] = get_md5(data)
+        return data

@@ -2,19 +2,20 @@ from __future__ import annotations
 
 from typing import Any, Self, cast, get_args
 
-import pandas as pd
+import polars as pl
 from emmet.core.types.typing import DateTimeType
-from pydantic import field_serializer, field_validator
+from pydantic import ConfigDict, field_serializer, field_validator
 from pymatgen.core import Structure
 
-from mp_api.client.contribs.models.attachments import Attachments
+from mp_api.client.contribs.helpers import serialize_datetime
+from mp_api.client.contribs.models.attachments import Attachment
 from mp_api.client.contribs.models.base import ContribsBase
 from mp_api.client.contribs.models.tables import TableStub
 from mp_api.client.contribs.schemas import Datum, _get_pydantic_from_dataframe
 from mp_api.client.contribs.utils import flatten_dict, unflatten_dict
 
 
-class Contribution(ContribsBase):
+class ContributionBase(ContribsBase):
     """Define base schema for a single contribution."""
 
     id: str | None = None
@@ -25,9 +26,6 @@ class Contribution(ContribsBase):
     last_modified: DateTimeType
     needs_build: bool = True
     data: dict[str, str | bool | Datum | None] = {}
-    structures: list[Structure] | None = None
-    tables: list[TableStub] | None = None
-    attachments: list[Attachments] | None = None
 
     @field_validator("data", mode="before")
     def construct_data(cls, d: dict) -> dict[str, str | Datum]:
@@ -57,8 +55,13 @@ class Contribution(ContribsBase):
         }
 
     @property
-    def id_fields(self) -> set[str]:
-        return {k for k in [self.id, self.project, self.identifier] if k}
+    def id_fields(self) -> dict[str, str]:
+        """Identifying fields that are set, keyed by field name."""
+        return {
+            name: value
+            for name in ("id", "project", "identifier")
+            if (value := getattr(self, name)) is not None
+        }
 
     @staticmethod
     def id_keys() -> set[str]:
@@ -74,15 +77,54 @@ class Contribution(ContribsBase):
         )
 
 
-class ContributionSubmission(Contribution):
+class Contribution(ContributionBase):
+    """The model stored in MongoDB.
+
+    This model is backwards compatible for older submissions that have attachments.
+    """
+
+    attachments: list[Attachment] | None = None
+    structures: list[Structure] | None = None
+    tables: list[TableStub] | None = None
+
+
+class ContributionSubmission(ContributionBase):
+    """Final schema from user-submitted contribution to be submitted to database.
+
+    Uses strs to reference other objects rather than the objects themselves.
+    """
+
+    structures: list[str] | None = None
+    tables: list[str] | None = None
+    notebook: str | None = None
+
+    @classmethod
+    def from_user_submission(
+        cls,
+        contrib: ContributionUserSubmission,
+    ):
+        data = contrib.model_dump()
+        _ = data.pop("structures")
+        _ = data.pop("tables")
+
+        return cls.model_validate(data)
+
+
+class ContributionUserSubmission(ContributionBase):
     """Schema for user-submitted contributions.
 
     NB: We forbid submission of new attachments.
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    structures: list[Structure] | None = None
+    tables: list[pl.DataFrame] | None = None
+    notebooks: list[dict[str, Any]] | None = None
+
     @classmethod
     def from_dataframe(
-        cls, df: pd.DataFrame, project: str = "PLACEHOLDER", **kwargs
+        cls, df: pl.DataFrame, project: str = "PLACEHOLDER", **kwargs
     ) -> list[Self]:
         """Construct a contribution from a DataFrame."""
         base_model, columns_renamed = _get_pydantic_from_dataframe(df)
